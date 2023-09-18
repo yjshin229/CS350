@@ -60,8 +60,8 @@ static void handle_connection(int conn_socket)
 		ssize_t received_request_length = recv(conn_socket, &request_length, sizeof(request_length), 0);
 
 		//if either information is not received, print an error message and break.
-		if (received_id == -1 || received_client == -1 || received_request_length == -1 ) {
-            printf("Error receiving request ID or client timestamp or request length\n");
+		if (received_id <= 0 || received_client <= 0 || received_request_length <= 0 ) {
+            perror("Error receiving request ID or client timestamp or request length\n");
 			exit = 1;
             break;
         }
@@ -72,28 +72,28 @@ static void handle_connection(int conn_socket)
 		//perform a busy wait for the amount of requested length time.
 		get_elapsed_busywait(request_length.tv_sec, request_length.tv_nsec);
 
-			//send response back to the client
+		//send response back to the client
 		ssize_t send_response = send(conn_socket, &request_id, sizeof(request_id), 0);
+		
 		if (send_response == -1) {
-			printf("Error sending response \n");
+			perror("Error sending response \n");
 			exit = 1;
 			break;
+		}else{
+			//get the timestamp at which the server completed processing the request.	
+			clock_gettime(CLOCK_MONOTONIC, &completion_time);
 		}
-		
-		//get the timestamp at which the server completed processing the request.\		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
-		clock_gettime(CLOCK_MONOTONIC, &completion_time);
 
-		float sent_time = (float) client_timestamp.tv_sec + client_timestamp.tv_nsec / NANO_IN_SEC;
-		float request_time = (float) request_length.tv_sec + request_length.tv_nsec / NANO_IN_SEC;
-		float format_receipt = (float) receipt_time.tv_sec + receipt_time.tv_nsec / NANO_IN_SEC;
-		float format_completion = (float) completion_time.tv_sec + completion_time.tv_nsec / NANO_IN_SEC;
+		float sent_time = ((long)client_timestamp.tv_sec * NANO_IN_SEC +  client_timestamp.tv_nsec)/(float) 1e9;
+		float request_time = ((long)request_length.tv_sec * NANO_IN_SEC + request_length.tv_nsec)/(float)1e9;
 		
-		// break;
 		if(exit == 0){
-			printf("R%llu:%9f,%9f,%9f,%9f\n", request_id, sent_time, request_time, format_receipt, format_completion);
+			printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", request_id, client_timestamp.tv_sec, client_timestamp.tv_nsec, request_length.tv_sec, request_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec,completion_time.tv_sec,completion_time.tv_nsec);
 		}
 
-	}	
+		
+
+	}
 
 	
 

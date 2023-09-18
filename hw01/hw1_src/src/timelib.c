@@ -38,7 +38,7 @@ uint64_t get_elapsed_sleep(long sec, long nsec)
  * wait_time seconds using busy-waiting functions */
 uint64_t get_elapsed_busywait(long sec, long nsec)
 {
-	uint64_t start, end, clocks_elapsed;
+	uint64_t start, end;
 	struct timespec begin_timestamp, current_timestamp;
 	struct timespec delay = {sec,nsec};
 	clock_gettime(CLOCK_MONOTONIC, &begin_timestamp);
