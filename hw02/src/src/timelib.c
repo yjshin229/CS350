@@ -26,34 +26,14 @@
  * wait_time seconds using sleeping functions */
 uint64_t get_elapsed_sleep(long sec, long nsec)
 {
-	uint64_t start, end;
-	struct timespec sleep = {sec, nsec};
-	get_clocks(start);
-	nanosleep(&sleep, NULL);
-	get_clocks(end);
-	return end - start;
+	/* IMPLEMENT ME! */
 }
 
 /* Return the number of clock cycles elapsed when waiting for
  * wait_time seconds using busy-waiting functions */
 uint64_t get_elapsed_busywait(long sec, long nsec)
 {
-	uint64_t start, end;
-	struct timespec begin_timestamp, current_timestamp;
-	struct timespec delay = {sec,nsec};
-	clock_gettime(CLOCK_MONOTONIC, &begin_timestamp);
-	timespec_add(&begin_timestamp, &delay);
-	get_clocks(start);
-	while (1){
-		int res;
-		clock_gettime(CLOCK_MONOTONIC, &current_timestamp);
-        res = timespec_cmp(&current_timestamp, &begin_timestamp);
-		if(res == 1){
-			break;
-		}
-	}
-	get_clocks(end);
-	return end - start;
+	/* IMPLEMENT ME! */
 }
 
 /* Utility function to add two timespec structures together. The input
@@ -69,29 +49,6 @@ void timespec_add (struct timespec * a, struct timespec * b)
 		a->tv_nsec = a->tv_nsec % NANO_IN_SEC;
 	}
 	a->tv_sec += addl_seconds;
-}
-
-/* Utility function to add two timespec structures together. The input
- * parameter a is updated with the result of the sum. */
-struct timespec timespec_sub (struct timespec * a, struct timespec * b)
-{
-	/* Try to add up the nsec and see if we spill over into the
-	 * seconds */
-	long leftSec = 0;
-	long nanos =  b->tv_nsec - a->tv_nsec;
-	if (nanos < 0) {
-		leftSec = 1;
-		nanos = ( NANO_IN_SEC -1 + a->tv_nsec) - b->tv_nsec;
-	}
-	if(leftSec == 1){
-		struct timespec sub = {b->tv_sec - 1 - a->tv_sec, nanos};
-		return sub;
-	}else{
-		struct timespec sub = {b->tv_sec - a->tv_sec, nanos};
-		return sub;
-	}
-	
-	
 }
 
 /* Utility function to compare two timespec structures. It returns 1
@@ -111,6 +68,7 @@ int timespec_cmp(struct timespec *a, struct timespec *b)
 
 /* Busywait for the amount of time described via the delay
  * parameter */
-// uint64_t busywait_timespec(struct timespec delay)
-// {
-// }
+uint64_t busywait_timespec(struct timespec delay)
+{
+	/* IMPLEMENT ME! (Optional but useful) */
+}

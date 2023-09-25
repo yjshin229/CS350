@@ -29,9 +29,16 @@
 *
 *******************************************************************************/
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sched.h>
+#include <signal.h>
+
+/* Needed for wait(...) */
+#include <sys/types.h>
+#include <sys/wait.h>
 
 /* Include struct definitions and other libraries that need to be
  * included by both client and server */
@@ -42,86 +49,29 @@
 	"Missing parameter. Exiting.\n"		\
 	"Usage: %s <port_number>\n"
 
+/* 4KB of stack for the worker thread */
+#define STACK_SIZE (4096)
+
+/* Main logic of the worker thread */
+/* IMPLEMENT HERE THE MAIN FUNCTION OF THE WORKER */
+
 /* Main function to handle connection with the client. This function
  * takes in input conn_socket and returns only when the connection
  * with the client is interrupted. */
-static void handle_connection(int conn_socket)
+void handle_connection(int conn_socket)
 {
-	uint64_t request_id;
-	struct timespec receipt_time ,client_timestamp, request_length, completion_time;
-	// struct timespec total_added_time = {(long) 0, (long)0};
-	struct timespec total_response_time = {(long) 0, (long)0};
-	struct timespec start_time, end_time, max, min;
-	int exit = 0;
 
-	while(exit == 0){
-		/* check if the requestId, client timestamp and the length
-		was received successfully in consecutive order.
-		*/ 
-		ssize_t received_id = recv(conn_socket, &request_id, sizeof(request_id), 0);
-		ssize_t received_client = recv(conn_socket, &client_timestamp, sizeof(client_timestamp), 0);
-		ssize_t received_request_length = recv(conn_socket, &request_length, sizeof(request_length), 0);
+	/* The connection with the client is alive here. Let's start
+	 * the worker thread. */
 
-		//if either information is not received, print an error message and break.
-		if (received_id <= 0 || received_client <= 0 || received_request_length <= 0 ) {
-            perror("Error receiving request ID or client timestamp or request length\n");
-			exit = 1;
-            break;
-        }
-        
-		//get the timestamp at which the server received the request.
-		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
+	/* IMPLEMENT HERE THE LOGIC TO START THE WORKER THREAD. */
 
-		//perform a busy wait for the amount of requested length time.
-		get_elapsed_busywait(request_length.tv_sec, request_length.tv_nsec);
+	/* We are ready to proceed with the rest of the request
+	 * handling logic. */
 
-		//send response back to the client
-		ssize_t send_response = send(conn_socket, &request_id, sizeof(request_id), 0);
-		
-		if (send_response == -1) {
-			perror("Error sending response \n");
-			exit = 1;
-			break;
-		}else{
-			//get the timestamp at which the server completed processing the request.	
-			clock_gettime(CLOCK_MONOTONIC, &completion_time);
-		}
-		
-		if(exit == 0){
-			printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", request_id, client_timestamp.tv_sec, client_timestamp.tv_nsec, request_length.tv_sec, request_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec,completion_time.tv_sec,completion_time.tv_nsec);
-			
-			//for eval assignment
-			// if(request_id == 0){
-			// 	start_time = receipt_time;
-			// }
-			// if(request_id == 499){
-			// 	end_time = completion_time;
-			// }
-			// struct timespec response_time = timespec_sub(&client_timestamp,&completion_time);
-			// printf("%ld.%09ld\n", response_time.tv_sec,response_time.tv_nsec);
-
-			// if(timespec_cmp(&response_time, &max) == 1){
-			// 	max = response_time;
-			// }
-			// if(timespec_cmp(&min,&response_time) == 1){
-			// 	min = response_time;
-			// }
-			// timespec_add(&total_response_time, &response_time);
-			// printf("Added so far %ld.%09ld\n", total_response_time.tv_sec,total_response_time.tv_nsec);
-			// timespec_add(&total_added_time, &request_length);
-			// printf("Added so far %ld.%09ld\n", total_added_time.tv_sec,total_added_time.tv_nsec);
-		}
-	}
-	// printf("BusyTime %ld.%09ld\n", total_added_time.tv_sec, total_added_time.tv_nsec );
-	
-	// printf("Response Time %ld.%09ld\n", total_response_time.tv_sec, total_response_time.tv_nsec );
-	// printf("Max Response Time %ld.%09ld\n", max.tv_sec, max.tv_nsec );
-	// printf("Min Response Time %ld.%09ld\n", min.tv_sec, min.tv_nsec );
-
-	// struct timespec total_elapsed_time = timespec_sub(&start_time,&end_time);
-	// printf("Total time %ld.%09ld\n", total_elapsed_time.tv_sec, total_elapsed_time.tv_nsec);
-
+	/* REUSE LOGIC FROM HW1 TO HANDLE THE PACKETS */
 }
+
 
 /* Template implementation of the main function for the FIFO
  * server. The server must accept in input a command line parameter
