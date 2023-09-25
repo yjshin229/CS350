@@ -53,7 +53,25 @@
 #define STACK_SIZE (4096)
 
 /* Main logic of the worker thread */
-/* IMPLEMENT HERE THE MAIN FUNCTION OF THE WORKER */
+int worker_main (void* arg){
+	struct timespec start;
+    clock_gettime(CLOCK_REALTIME, &start);
+	
+	printf("[#WORKER#] %ld.%09ld Worker Thread Alive!\n", start.tv_sec, start.tv_nsec);
+
+	while(1){
+		get_elapsed_busywait(1, 0);
+		
+		struct timespec busyWaitTime;
+		clock_gettime(CLOCK_REALTIME, &busyWaitTime);
+	
+		printf("[#WORKER#] %ld.%09ld Still Alive!\n", busyWaitTime.tv_sec, busyWaitTime.tv_nsec);
+
+		get_elapsed_sleep(1,0);
+	}
+
+	return EXIT_SUCCESS;
+}
 
 /* Main function to handle connection with the client. This function
  * takes in input conn_socket and returns only when the connection
@@ -64,12 +82,66 @@ void handle_connection(int conn_socket)
 	/* The connection with the client is alive here. Let's start
 	 * the worker thread. */
 
-	/* IMPLEMENT HERE THE LOGIC TO START THE WORKER THREAD. */
+	void* child_stack = malloc(STACK_SIZE);
+	void* worker_main_arg;
+
+	if(child_stack == NULL){
+		perror("ERROR: Unable to allocate memory.\n");
+      	exit(EXIT_FAILURE);
+	}
+
+	int pid = clone(worker_main, child_stack + STACK_SIZE, CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM, worker_main_arg );
+
+	if (pid < 0) {
+        perror("ERROR: Unable to create the child process.\n");
+        exit(EXIT_FAILURE);
+    }
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
 
-	/* REUSE LOGIC FROM HW1 TO HANDLE THE PACKETS */
+	uint64_t request_id;
+	struct timespec receipt_time ,client_timestamp, request_length, completion_time;
+
+	int exit = 0;
+
+	while(exit == 0){
+		/* check if the requestId, client timestamp and the length
+		was received successfully in consecutive order.
+		*/ 
+		ssize_t received_id = recv(conn_socket, &request_id, sizeof(request_id), 0);
+		ssize_t received_client = recv(conn_socket, &client_timestamp, sizeof(client_timestamp), 0);
+		ssize_t received_request_length = recv(conn_socket, &request_length, sizeof(request_length), 0);
+
+		//if either information is not received, print an error message and break.
+		if (received_id <= 0 || received_client <= 0 || received_request_length <= 0 ) {
+            perror("Error receiving request ID or client timestamp or request length\n");
+			exit = 1;
+            break;
+        }
+        
+		//get the timestamp at which the server received the request.
+		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
+
+		//perform a busy wait for the amount of requested length time.
+		get_elapsed_busywait(request_length.tv_sec, request_length.tv_nsec);
+
+		//send response back to the client
+		ssize_t send_response = send(conn_socket, &request_id, sizeof(request_id), 0);
+		
+		if (send_response == -1) {
+			perror("Error sending response \n");
+			exit = 1;
+			break;
+		}else{
+			//get the timestamp at which the server completed processing the request.	
+			clock_gettime(CLOCK_MONOTONIC, &completion_time);
+		}
+		
+		if(exit == 0){
+			printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", request_id, client_timestamp.tv_sec, client_timestamp.tv_nsec, request_length.tv_sec, request_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec,completion_time.tv_sec,completion_time.tv_nsec);
+		}
+	}
 }
 
 

@@ -26,14 +26,34 @@
  * wait_time seconds using sleeping functions */
 uint64_t get_elapsed_sleep(long sec, long nsec)
 {
-	/* IMPLEMENT ME! */
+	uint64_t start, end;
+	struct timespec sleep = {sec, nsec};
+	get_clocks(start);
+	nanosleep(&sleep, NULL);
+	get_clocks(end);
+	return end - start;
 }
 
 /* Return the number of clock cycles elapsed when waiting for
  * wait_time seconds using busy-waiting functions */
 uint64_t get_elapsed_busywait(long sec, long nsec)
 {
-	/* IMPLEMENT ME! */
+	uint64_t start, end;
+	struct timespec begin_timestamp, current_timestamp;
+	struct timespec delay = {sec,nsec};
+	clock_gettime(CLOCK_MONOTONIC, &begin_timestamp);
+	timespec_add(&begin_timestamp, &delay);
+	get_clocks(start);
+	while (1){
+		int res;
+		clock_gettime(CLOCK_MONOTONIC, &current_timestamp);
+        res = timespec_cmp(&current_timestamp, &begin_timestamp);
+		if(res == 1){
+			break;
+		}
+	}
+	get_clocks(end);
+	return end - start;
 }
 
 /* Utility function to add two timespec structures together. The input
@@ -68,7 +88,7 @@ int timespec_cmp(struct timespec *a, struct timespec *b)
 
 /* Busywait for the amount of time described via the delay
  * parameter */
-uint64_t busywait_timespec(struct timespec delay)
-{
-	/* IMPLEMENT ME! (Optional but useful) */
-}
+// uint64_t busywait_timespec(struct timespec delay)
+// {
+// 	/* IMPLEMENT ME! (Optional but useful) */
+// }
