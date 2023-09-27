@@ -76,8 +76,8 @@ void initialize_queue(struct queue *the_queue) {
     the_queue->size = 0;
 }
 struct worker_params {
-  struct request* req;
-  int conn_socket;
+	struct queue* the_queue;
+  	int conn_socket;
 };
 
 /* Add a new request <request> to the shared queue <the_queue> */
@@ -159,25 +159,29 @@ void dump_queue_status(struct queue * the_queue)
 int worker_main (void* arg){
 	struct timespec start_time, receipt_time, completion_time;
 	struct worker_params* worker_param = (struct worker_params*)arg;
-	struct request* req = worker_param->req;
+	struct queue* the_queue = worker_param->the_queue;
 	int conn_socket = worker_param->conn_socket;
 
     clock_gettime(CLOCK_REALTIME, &start_time);
-
-	// while(1){
-	// 	get_elapsed_busywait(req.req_length.tv_sec, req.req_length.tv_nsec);
 	
-	// 	size_t send_response = send(worker_param->conn_socket, req.req_id, sizeof( req.req_id), 0);
-	// 	if (send_response == -1) {
-	// 		perror("Error sending response \n");
-	// 		break;
-	// 	}else{
-	// 		clock_gettime(CLOCK_MONOTONIC, &completion_time);
-	// 	}
+	
+	while(1){
+		struct request my_request = get_from_queue(the_queue);
+		get_elapsed_busywait(my_request.req_length.tv_sec, my_request.req_length.tv_nsec);
+		dump_queue_status(the_queue);
+		
+		size_t send_response = send(conn_socket, &my_request.req_id, sizeof(my_request.req_id), 0);
+		if (send_response == -1) {
+			perror("Error sending response \n");
+			break;
+		}else{
+			clock_gettime(CLOCK_MONOTONIC, &completion_time);
+		}
 
-	// 	printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", req.req_id, req.req_timestamp.tv_sec, req.req_timestamp.tv_nsec, req.req_length.tv_sec, req.req_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec,completion_time.tv_sec,completion_time.tv_nsec);
+		printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", 
+		my_request.req_id, my_request.req_timestamp.tv_sec, my_request.req_timestamp.tv_nsec, my_request.req_length.tv_sec, my_request.req_length.tv_nsec, 0, 0, start_time.tv_sec, start_time.tv_nsec ,completion_time.tv_sec,completion_time.tv_nsec);
 
-	// }
+	}
 
 	return EXIT_SUCCESS;
 }
@@ -188,14 +192,14 @@ int worker_main (void* arg){
 void handle_connection(int conn_socket)
 {
 	struct request * req;
-	struct queue * the_queue;
+	struct queue * the_queue = (struct queue*)malloc(sizeof(struct queue));
 	struct timespec receipt_time;
 	size_t in_bytes;
 	void* child_stack = malloc(STACK_SIZE);
 
 	struct worker_params* worker_param = malloc(sizeof(struct worker_params));
-    worker_param->req = req;
 	worker_param->conn_socket = conn_socket;
+	worker_param->the_queue = the_queue;
 
 	/* The connection with the client is alive here. Let's
 	 * initialize the shared queue. */
@@ -223,7 +227,7 @@ void handle_connection(int conn_socket)
 	req = (struct request *)malloc(sizeof(struct request));
 
 	do {
-		in_bytes = recv(conn_socket, req, sizeof(req), 0);
+		in_bytes = recv(conn_socket, req, sizeof(struct request), 0);
 
 		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
 
@@ -236,6 +240,9 @@ void handle_connection(int conn_socket)
 		if (in_bytes > 0) {
 			add_to_queue(*req, the_queue);
 		}
+		// else{
+		// 	break;
+		// }
 	} while (in_bytes > 0);
 
 	/* PERFORM ORDERLY DEALLOCATION AND OUTRO HERE */
