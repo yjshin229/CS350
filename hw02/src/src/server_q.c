@@ -64,22 +64,39 @@ sem_t * queue_notify;
 #define QUEUE_SIZE 500
 
 struct queue {
-    /* IMPLEMENT ME */
+    struct request requests[QUEUE_SIZE];
+    int front;
+    int rear;
+    int size;
 };
 
+void initialize_queue(struct queue *the_queue) {
+    the_queue->front = 0;
+    the_queue->rear = -1; 
+    the_queue->size = 0;
+}
 struct worker_params {
-    /* IMPLEMENT ME */
+  struct request* req;
+  int conn_socket;
 };
 
 /* Add a new request <request> to the shared queue <the_queue> */
 int add_to_queue(struct request to_add, struct queue * the_queue)
 {
+	
 	int retval = 0;
 	/* QUEUE PROTECTION INTRO START --- DO NOT TOUCH */
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	if (the_queue->size >= QUEUE_SIZE) {
+        perror("Error: The queue is full!");
+        retval = -1;
+    } else {
+        the_queue->rear = (the_queue->rear + 1) % QUEUE_SIZE;
+        the_queue->requests[the_queue->rear] = to_add;
+        the_queue->size++;
+    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -98,7 +115,13 @@ struct request get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	if (the_queue->size == 0) {
+        perror("Error: The queue is empty!");
+    } else {
+        retval = the_queue->requests[the_queue->front];
+        the_queue->front = (the_queue->front + 1) % QUEUE_SIZE;
+        the_queue->size--;
+    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -116,7 +139,14 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	printf("Q:[");
+    for (i = 0; i < the_queue->size; i++) {
+        printf("R%d", the_queue->requests[(the_queue->front + i) % QUEUE_SIZE].req_id);
+        if (i < the_queue->size - 1) {
+            printf(",");
+        }
+    }
+    printf("]\n");
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -126,7 +156,31 @@ void dump_queue_status(struct queue * the_queue)
 
 
 /* Main logic of the worker thread */
-/* IMPLEMENT HERE THE MAIN FUNCTION OF THE WORKER */
+int worker_main (void* arg){
+	struct timespec start_time, receipt_time, completion_time;
+	struct worker_params* worker_param = (struct worker_params*)arg;
+	struct request* req = worker_param->req;
+	int conn_socket = worker_param->conn_socket;
+
+    clock_gettime(CLOCK_REALTIME, &start_time);
+
+	// while(1){
+	// 	get_elapsed_busywait(req.req_length.tv_sec, req.req_length.tv_nsec);
+	
+	// 	size_t send_response = send(worker_param->conn_socket, req.req_id, sizeof( req.req_id), 0);
+	// 	if (send_response == -1) {
+	// 		perror("Error sending response \n");
+	// 		break;
+	// 	}else{
+	// 		clock_gettime(CLOCK_MONOTONIC, &completion_time);
+	// 	}
+
+	// 	printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", req.req_id, req.req_timestamp.tv_sec, req.req_timestamp.tv_nsec, req.req_length.tv_sec, req.req_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec,completion_time.tv_sec,completion_time.tv_nsec);
+
+	// }
+
+	return EXIT_SUCCESS;
+}
 
 /* Main function to handle connection with the client. This function
  * takes in input conn_socket and returns only when the connection
@@ -135,26 +189,44 @@ void handle_connection(int conn_socket)
 {
 	struct request * req;
 	struct queue * the_queue;
+	struct timespec receipt_time;
 	size_t in_bytes;
+	void* child_stack = malloc(STACK_SIZE);
+
+	struct worker_params* worker_param = malloc(sizeof(struct worker_params));
+    worker_param->req = req;
+	worker_param->conn_socket = conn_socket;
 
 	/* The connection with the client is alive here. Let's
 	 * initialize the shared queue. */
 
-	/* IMPLEMENT HERE ANY QUEUE INITIALIZATION LOGIC */
+	initialize_queue(the_queue);
 
 	/* Queue ready to go here. Let's start the worker thread. */
 
-	/* IMPLEMENT HERE THE LOGIC TO START THE WORKER THREAD. */
+	if(child_stack == NULL){
+		perror("ERROR: Unable to allocate memory.\n");
+      	exit(EXIT_FAILURE);
+	}
+
+
+	int pid = clone(worker_main, child_stack + STACK_SIZE, CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM, worker_param );
+
+	if (pid < 0) {
+        perror("ERROR: Unable to create the child process.\n");
+        exit(EXIT_FAILURE);
+    }
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
 
-	/* REUSE LOGIC FROM HW1 TO HANDLE THE PACKETS */
-
 	req = (struct request *)malloc(sizeof(struct request));
 
 	do {
-		//in_bytes = recv(conn_socket, ... /* IMPLEMENT ME */);
+		in_bytes = recv(conn_socket, req, sizeof(req), 0);
+
+		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
+
 		/* SAMPLE receipt_timestamp HERE */
 
 		/* Don't just return if in_bytes is 0 or -1. Instead
