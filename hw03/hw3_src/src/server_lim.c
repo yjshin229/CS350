@@ -81,7 +81,10 @@ struct connection_params {
 };
 
 struct worker_params {
-	/* ADD REQUIRED FIELDS */
+	int worker_done;
+    struct queue *the_queue;
+	int conn_socket;
+	struct timespec receipt_time;
 };
 
 /* Helper function to perform queue initialization */
@@ -180,8 +183,11 @@ void dump_queue_status(struct queue * the_queue)
 /* Main logic of the worker thread */
 int worker_main (void * arg)
 {
-	struct timespec now;
+	struct timespec now, start_time, completion_time;
+	
 	struct worker_params * params = (struct worker_params *)arg;
+	struct request_meta current_queue;
+	struct response resp;
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -190,9 +196,30 @@ int worker_main (void * arg)
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
 
-		/* IMPLEMENT ME !! Main worker logic. */
-
 		dump_queue_status(params->the_queue);
+		current_queue = get_from_queue(params->worker_done);
+
+		clock_gettime(CLOCK_REALTIME, &start_time);
+		busywait_timespec(current_queue.request.req_length);
+
+		resp.req_id = current_queue.request.req_id;
+		resp.ack = 0;
+		
+		size_t send_response = send(params->conn_socket, &resp, sizeof(struct response), 0);
+		if (send_response == -1) {
+			perror("Error sending response \n");
+			break;
+		}else{
+			clock_gettime(CLOCK_MONOTONIC, &completion_time);
+		}
+
+		printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", 
+		current_queue.request.req_id, 
+		current_queue.request.req_timestamp.tv_sec, current_queue.request.req_timestamp.tv_nsec, 
+		current_queue.request.req_length.tv_sec, current_queue.request.req_length.tv_nsec, 
+		params->receipt_time.tv_sec, params->receipt_time.tv_nsec, 
+		start_time.tv_sec, start_time.tv_nsec ,
+		completion_time.tv_sec,completion_time.tv_nsec);
 	}
 
 	return EXIT_SUCCESS;
@@ -267,6 +294,8 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		if (add_to_queue(*req, the_queue) == -1) { 
 			resp.req_id = req->request.req_id;  
 			resp.ack = 1;
+			printf("XR%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld\n", 
+		resp.req_id, req->request.req_timestamp.tv_sec, req->request.req_timestamp.tv_nsec, req->request.req_length.tv_sec, req->request.req_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec );
 			send(conn_socket, &resp, sizeof(struct response), 0);
 		}
 
