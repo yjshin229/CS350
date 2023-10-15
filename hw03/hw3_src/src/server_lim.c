@@ -69,11 +69,15 @@ struct request_meta {
 };
 
 struct queue {
-	/* ADD REQUIRED FIELDS */
+	struct request_meta* items;
+    int capacity; 
+    int front;
+    int rear;
+    int size;
 };
 
 struct connection_params {
-	/* ADD REQUIRED FIELDS */
+	int queue_size;
 };
 
 struct worker_params {
@@ -83,7 +87,11 @@ struct worker_params {
 /* Helper function to perform queue initialization */
 void queue_init(struct queue * the_queue, size_t queue_size)
 {
-	/* IMPLEMENT ME !! */
+	the_queue->items = (struct request_meta*)malloc(queue_size * sizeof(struct request_meta));
+    the_queue->capacity = queue_size;
+    the_queue->size = 0; 
+    the_queue->front = 0;
+    the_queue->rear = -1;
 }
 
 /* Add a new request <request> to the shared queue <the_queue> */
@@ -124,7 +132,14 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	if (the_queue->size > 0) {
+        retval = the_queue->items[the_queue->front];
+        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
+        the_queue->size--;
+    }
+    else {
+        perror("Error: The queue is empty!");
+    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -139,7 +154,22 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	printf("Q:[");
+	if (the_queue->size > 0) {
+		int count = the_queue->size;
+		int index = the_queue->front;
+		
+		while (count--) {
+			printf("R%llu", (unsigned long long)the_queue->items[index].request.req_id); 
+			
+			index = (index + 1) % the_queue->capacity; 
+
+			if (count > 0) {
+				printf(","); 
+			}
+		}
+	}
+	printf("]\n");
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -183,6 +213,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct request_meta * req;
 	struct queue * the_queue;
 	size_t in_bytes;
+	struct timespec receipt_time;
 
 	/* The connection with the client is alive here. Let's get
 	 * ready to start the worker thread. */
@@ -190,33 +221,55 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct worker_params worker_params;
 	int worker_id, res;
 
+	struct response resp;
+	req = (struct request_meta *)malloc(sizeof(struct request_meta));
+
 	/* Now handle queue allocation and initialization */
-	/* IMPLEMENT ME !!*/
+
+	the_queue = (struct queue *)malloc(sizeof(struct queue));
+    if (the_queue == NULL) {
+        perror("Failed to allocate memory for the queue");
+        exit(EXIT_FAILURE);
+    }
+    queue_init(the_queue, conn_params.queue_size);
+
 
 	/* Prepare worker_parameters */
-	/* IMPLEMENT ME !!*/
+	if(worker_stack == NULL){
+		perror("ERROR: Unable to allocate memory.\n");
+      	exit(EXIT_FAILURE);
+	}
 	worker_id = start_worker(&worker_params, worker_stack);
 
 	if (worker_id < 0) {
-		/* HANDLE WORKER CREATION ERROR */
+		perror("ERROR: Unable to create the child process.\n");
+        exit(EXIT_FAILURE);
 	}
 
 	printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
-
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	do {
-		/* IMPLEMENT ME: Receive next request from socket. */
-
+		in_bytes = recv(conn_socket, req, sizeof(struct request_meta), 0);
 		/* Don't just return if in_bytes is 0 or -1. Instead
-		 * skip the response and break out of the loop in an
-		 * orderly fashion so that we can de-allocate the req
-		 * and resp varaibles, and shutdown the socket. */
+         * skip the response and break out of the loop in an
+         * orderly fashion so that we can de-allocate the req
+         * and resp varaibles, and shutdown the socket. */
+		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
+		 
+		if (in_bytes <= 0) {
+			break;
+		}
+    
+		if (add_to_queue(*req, the_queue) == -1) { 
+			resp.req_id = req->request.req_id;  
+			resp.ack = 1;
+			send(conn_socket, &resp, sizeof(struct response), 0);
+		}
 
-		/* IMPLEMENT ME: Attempt to enqueue or reject request! */
 	} while (in_bytes > 0);
 
 	/* Ask the worker thead to terminate */
@@ -244,7 +297,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
  * server. The server must accept in input a command line parameter
  * with the <port number> to bind the server to. */
 int main (int argc, char ** argv) {
-	int sockfd, retval, accepted, optval, opt;
+	int sockfd, retval, accepted, optval, opt, queue_size;
 	in_port_t socket_port;
 	struct sockaddr_in addr, client;
 	struct in_addr any_address;
@@ -253,12 +306,34 @@ int main (int argc, char ** argv) {
 	struct connection_params conn_params;
 
 	/* Parse all the command line arguments */
-	/* IMPLEMENT ME!! */
+	while ((opt = getopt(argc, argv, "q:")) != -1) {
+        switch (opt) {
+            case 'q':
+                queue_size = atoi(optarg);
+                break;
+            case '?':
+                if (optopt == 'q') {
+                    fprintf(stderr, "Option -%c requires an argument.\n", optopt);
+                } else {
+                    fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
+                }
+                return EXIT_FAILURE;
+            default:
+				fprintf(stderr, USAGE_STRING, argv[0]);
+                return EXIT_FAILURE;
+        }
+    }
+
 	/* PARSE THE COMMANDS LINE: */
 	/* 1. Detect the -q parameter and set aside the queue size in conn_params */
-	conn_params...
+	conn_params.queue_size = queue_size;
 	/* 2. Detect the port number to bind the server socket to (see HW1 and HW2) */
-	socket_port = ...
+	if (optind < argc) {
+        socket_port = atoi(argv[optind]);
+    } else {
+        fprintf(stderr, USAGE_STRING, argv[0]);
+        return EXIT_FAILURE;
+    }
 
 	/* Now onward to create the right type of socket */
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
