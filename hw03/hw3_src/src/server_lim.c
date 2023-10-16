@@ -57,6 +57,8 @@
 /* 4KB of stack for the worker thread */
 #define STACK_SIZE (4096)
 
+int worker_done = 0;
+
 /* START - Variables needed to protect the shared queue. DO NOT TOUCH */
 sem_t * queue_mutex;
 sem_t * queue_notify;
@@ -64,8 +66,6 @@ sem_t * queue_notify;
 
 struct request_meta {
 	struct request request;
-
-	/* ADD REQUIRED FIELDS */
 };
 
 struct queue {
@@ -81,10 +81,9 @@ struct connection_params {
 };
 
 struct worker_params {
-	int worker_done;
     struct queue *the_queue;
 	int conn_socket;
-	struct timespec receipt_time;
+	struct timespec receipt_timestamp;
 };
 
 /* Helper function to perform queue initialization */
@@ -109,12 +108,14 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* Make sure that the queue is not full */
-	if (/* Condition to check for full queue */) {
+	if (the_queue->size == the_queue->capacity) {
 		/* What to do in case of a full queue */
-		/* DO NOT RETURN DIRECTLY HERE */
+		retval = 1;
 	} else {
 		/* If all good, add the item in the queue */
-		/* IMPLEMENT ME !!*/
+		the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+		the_queue->items[the_queue->rear] = to_add;
+		the_queue->size++;
 
 		/* QUEUE SIGNALING FOR CONSUMER --- DO NOT TOUCH */
 		sem_post(queue_notify);
@@ -135,13 +136,13 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	if (the_queue->size > 0) {
-        retval = the_queue->items[the_queue->front];
-        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
-        the_queue->size--;
+	if (the_queue->size == 0) {
+        perror("Error: The queue is empty!\n");
     }
     else {
-        perror("Error: The queue is empty!");
+		retval = the_queue->items[the_queue->front];
+        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
+        the_queue->size--;
     }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
@@ -156,23 +157,16 @@ void dump_queue_status(struct queue * the_queue)
 	/* QUEUE PROTECTION INTRO START --- DO NOT TOUCH */
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
-
+	
 	printf("Q:[");
-	if (the_queue->size > 0) {
-		int count = the_queue->size;
-		int index = the_queue->front;
-		
-		while (count--) {
-			printf("R%llu", (unsigned long long)the_queue->items[index].request.req_id); 
-			
-			index = (index + 1) % the_queue->capacity; 
+    for (int i = 0; i < the_queue->size; i++) {
+        printf("R%ld",the_queue->items[(the_queue->front + i) % the_queue->capacity].request.req_id);
+        if (i < the_queue->size - 1) {
+            printf(",");
+        }
+    }
+    printf("]\n");
 
-			if (count > 0) {
-				printf(","); 
-			}
-		}
-	}
-	printf("]\n");
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -183,43 +177,43 @@ void dump_queue_status(struct queue * the_queue)
 /* Main logic of the worker thread */
 int worker_main (void * arg)
 {
-	struct timespec now, start_time, completion_time;
-	
+	struct timespec now, start_timestamp, completion_timestamp;
 	struct worker_params * params = (struct worker_params *)arg;
-	struct request_meta current_queue;
-	struct response resp;
+	struct queue* the_queue = params->the_queue;
+	int conn_socket = params->conn_socket;
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+	
 
 	/* Okay, now execute the main logic. */
-	while (!params->worker_done) {
+	while (!worker_done) {
+		dump_queue_status(the_queue);
+		struct request_meta req;
+		struct response resp;
+		// printf("dumping queue\n");
+		// dump_queue_status(the_queue);
+		// printf("dumped queue!\n");
+		req = get_from_queue(the_queue);
+		clock_gettime(CLOCK_REALTIME, &start_timestamp);
 
-		dump_queue_status(params->the_queue);
-		current_queue = get_from_queue(params->worker_done);
+		busywait_timespec(req.request.req_length);
+		clock_gettime(CLOCK_MONOTONIC, &completion_timestamp);
 
-		clock_gettime(CLOCK_REALTIME, &start_time);
-		busywait_timespec(current_queue.request.req_length);
-
-		resp.req_id = current_queue.request.req_id;
+		resp.req_id = req.request.req_id;
 		resp.ack = 0;
 		
-		size_t send_response = send(params->conn_socket, &resp, sizeof(struct response), 0);
-		if (send_response == -1) {
-			perror("Error sending response \n");
-			break;
-		}else{
-			clock_gettime(CLOCK_MONOTONIC, &completion_time);
-		}
+		send(conn_socket, &resp, sizeof(struct response), 0);
 
-		printf("R%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld,%ld.%09ld\n", 
-		current_queue.request.req_id, 
-		current_queue.request.req_timestamp.tv_sec, current_queue.request.req_timestamp.tv_nsec, 
-		current_queue.request.req_length.tv_sec, current_queue.request.req_length.tv_nsec, 
-		params->receipt_time.tv_sec, params->receipt_time.tv_nsec, 
-		start_time.tv_sec, start_time.tv_nsec ,
-		completion_time.tv_sec,completion_time.tv_nsec);
+		printf("R%ld:%lf,%lf,%lf,%lf,%lf\n", 
+		req.request.req_id, 
+		TSPEC_TO_DOUBLE(req.request.req_timestamp),
+		TSPEC_TO_DOUBLE(req.request.req_length),
+		TSPEC_TO_DOUBLE(params->receipt_timestamp), 
+		TSPEC_TO_DOUBLE(start_timestamp),
+		TSPEC_TO_DOUBLE(completion_timestamp));
+
 	}
 
 	return EXIT_SUCCESS;
@@ -229,7 +223,8 @@ int worker_main (void * arg)
  * clone() system call*/
 int start_worker(void * params, void * worker_stack)
 {
-	/* IMPLEMENT ME !! */
+    int pid = clone(worker_main, (char*)worker_stack + STACK_SIZE,  CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM, params);
+    return pid;
 }
 
 /* Main function to handle connection with the client. This function
@@ -240,20 +235,20 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct request_meta * req;
 	struct queue * the_queue;
 	size_t in_bytes;
-	struct timespec receipt_time;
+	int worker_id;
+	struct timespec receipt_timestamp;
 
 	/* The connection with the client is alive here. Let's get
 	 * ready to start the worker thread. */
 	void * worker_stack = malloc(STACK_SIZE);
 	struct worker_params worker_params;
-	int worker_id, res;
 
 	struct response resp;
-	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	/* Now handle queue allocation and initialization */
 
 	the_queue = (struct queue *)malloc(sizeof(struct queue));
+	
     if (the_queue == NULL) {
         perror("Failed to allocate memory for the queue");
         exit(EXIT_FAILURE);
@@ -262,6 +257,10 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 
 
 	/* Prepare worker_parameters */
+	worker_params.the_queue = the_queue;
+	worker_params.conn_socket = conn_socket;
+	
+
 	if(worker_stack == NULL){
 		perror("ERROR: Unable to allocate memory.\n");
       	exit(EXIT_FAILURE);
@@ -285,20 +284,23 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
          * skip the response and break out of the loop in an
          * orderly fashion so that we can de-allocate the req
          * and resp varaibles, and shutdown the socket. */
-		clock_gettime(CLOCK_MONOTONIC, &receipt_time);
-		 
-		if (in_bytes <= 0) {
-			break;
-		}
-    
-		if (add_to_queue(*req, the_queue) == -1) { 
-			resp.req_id = req->request.req_id;  
-			resp.ack = 1;
-			printf("XR%lu:%ld.%09ld,%ld.%09ld,%ld.%09ld\n", 
-		resp.req_id, req->request.req_timestamp.tv_sec, req->request.req_timestamp.tv_nsec, req->request.req_length.tv_sec, req->request.req_length.tv_nsec, receipt_time.tv_sec, receipt_time.tv_nsec );
-			send(conn_socket, &resp, sizeof(struct response), 0);
-		}
 
+		clock_gettime(CLOCK_MONOTONIC, &receipt_timestamp);
+		worker_params.receipt_timestamp = receipt_timestamp;
+		if(in_bytes > 0){
+			int add_status = add_to_queue(*req, the_queue);
+			if (add_status == 1) { 
+				resp.req_id = req->request.req_id;  
+				resp.ack = 1;
+				send(conn_socket, &resp, sizeof(struct response), 0);
+				printf("XR%lu:%lf,%lf,%lf\n", 
+				resp.req_id, 
+				TSPEC_TO_DOUBLE(req->request.req_timestamp), 
+				TSPEC_TO_DOUBLE(req->request.req_length), 
+				TSPEC_TO_DOUBLE(receipt_timestamp) );
+
+			}
+		}
 	} while (in_bytes > 0);
 
 	/* Ask the worker thead to terminate */

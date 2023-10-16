@@ -58,6 +58,8 @@
 /* 4KB of stack for the worker thread */
 #define STACK_SIZE (4096)
 
+int worker_done = 0;
+
 /* START - Variables needed to protect the shared queue. DO NOT TOUCH */
 sem_t * queue_mutex;
 sem_t * queue_notify;
@@ -70,21 +72,33 @@ struct request_meta {
 };
 
 struct queue {
-	/* ADD REQUIRED FIELDS */
+	struct request_meta* items;
+    int capacity; 
+    int front;
+    int rear;
+    int size;
 };
 
 struct connection_params {
-	/* ADD REQUIRED FIELDS */
+	int queue_size;
+	int workers;
 };
 
 struct worker_params {
-	/* ADD REQUIRED FIELDS */
+    struct queue *the_queue;
+	int conn_socket;
+	struct timespec receipt_time;
+	int thread_id;
 };
 
 /* Helper function to perform queue initialization */
 void queue_init(struct queue * the_queue, size_t queue_size)
 {
-	/* IMPLEMENT ME !! */
+	the_queue->items = (struct request_meta*)malloc(queue_size * sizeof(struct request_meta));
+    the_queue->capacity = queue_size;
+    the_queue->size = 0; 
+    the_queue->front = 0;
+    the_queue->rear = -1;
 }
 
 /* Add a new request <request> to the shared queue <the_queue> */
@@ -99,15 +113,16 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* Make sure that the queue is not full */
-	if (/* Condition to check for full queue */) {
+	if (the_queue->size == the_queue->capacity) {
 		/* What to do in case of a full queue */
-
+		retval = 1;
 		/* DO NOT RETURN DIRECTLY HERE. The
 		 * sem_post(queue_mutex) below MUST happen. */
 	} else {
 		/* If all good, add the item in the queue */
-		/* IMPLEMENT ME !!*/
-
+		the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+		the_queue->items[the_queue->rear] = to_add;
+		the_queue->size++;
 		/* QUEUE SIGNALING FOR CONSUMER --- DO NOT TOUCH */
 		sem_post(queue_notify);
 	}
@@ -127,7 +142,14 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	if (the_queue->size > 0) {
+        retval = the_queue->items[the_queue->front];
+        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
+        the_queue->size--;
+    }
+    else {
+        perror("Error: The queue is empty!\n");
+    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -142,7 +164,15 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	printf("Q:[");
+    for (int i = 0; i < the_queue->size; i++) {
+		uint64_t current_id = the_queue->items[(the_queue->front + i) % the_queue->capacity].request.req_id;
+        printf("R%lu", current_id);
+        if (i < the_queue->size - 1) {
+            printf(",");
+        }
+    }
+    printf("]\n");
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -153,17 +183,37 @@ void dump_queue_status(struct queue * the_queue)
 /* Main logic of the worker thread */
 int worker_main (void * arg)
 {
-	struct timespec now;
+	struct timespec now, start_timestamp, completion_timestamp;
 	struct worker_params * params = (struct worker_params *)arg;
-
+	
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
 
 	/* Okay, now execute the main logic. */
-	while (!params->worker_done) {
+	while (!worker_done) {
+		struct request_meta req;
+		struct response resp;
 
-		/* IMPLEMENT ME !! Main worker logic. */
+		req = get_from_queue(params->the_queue);
+
+		clock_gettime(CLOCK_REALTIME, &start_timestamp);
+		busywait_timespec(req.request.req_length);
+		clock_gettime(CLOCK_MONOTONIC, &completion_timestamp);
+
+		resp.req_id = req.request.req_id;
+		resp.ack = 0;
+		
+		send(params->conn_socket, &resp, sizeof(struct response), 0);
+		
+		printf("T%d R%lu:%lf,%lf,%lf,%lf,%lf\n", 
+			params->thread_id, 
+			req.request.req_id, 
+			TSPEC_TO_DOUBLE(req.request.req_timestamp), 
+			TSPEC_TO_DOUBLE(params->receipt_time),
+			TSPEC_TO_DOUBLE(start_timestamp),
+			TSPEC_TO_DOUBLE(completion_timestamp)
+		);
 
 		dump_queue_status(params->the_queue);
 	}
@@ -175,7 +225,8 @@ int worker_main (void * arg)
  * clone() system call*/
 int start_worker(void * params, void * worker_stack)
 {
-	/* IMPLEMENT ME !! */
+	int pid = clone(worker_main, (char*)worker_stack + STACK_SIZE,  CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM, params);
+    return pid;
 }
 
 /* Main function to handle connection with the client. This function
@@ -187,8 +238,62 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct queue * the_queue;
 	size_t in_bytes;
 
+	struct timespec receipt_timestamp;
+	struct response resp;
+	int worker_id;
+
+	the_queue = (struct queue *)malloc(sizeof(struct queue));
+	
+    if (the_queue == NULL) {
+        perror("Failed to allocate memory for the queue");
+        exit(EXIT_FAILURE);
+    }
+    queue_init(the_queue, conn_params.queue_size);
+
 	/* IMPLEMENT ME!! Write a loop to start and initialize all the
 	 * worker threads ! */
+
+	struct worker_params * worker_params = malloc(sizeof(struct worker_params) * conn_params.workers);
+    // void ** worker_stacks = malloc(sizeof(void *) * conn_params.workers);
+	void* worker_stacks[conn_params.workers];
+
+	for (int i = 0; i < conn_params.workers; i++) {
+        worker_params[i].the_queue = the_queue;
+        worker_params[i].conn_socket = conn_socket;
+		worker_params[i].thread_id = i;
+        clock_gettime(CLOCK_MONOTONIC, &worker_params[i].receipt_time);
+        worker_stacks[i] = malloc(STACK_SIZE);
+		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
+		if(worker_stacks == NULL){
+			perror("ERROR: Unable to allocate memory.\n");
+      		exit(EXIT_FAILURE);
+		}
+		if (worker_id < 0) {
+            perror("ERROR: Unable to create the child process.\n");
+            exit(EXIT_FAILURE);
+        }
+		printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
+    }
+	// for (int i = 0; i < conn_params.workers; i++) {
+    //     worker_stacks[i] = malloc(STACK_SIZE);
+    //     if(worker_stacks[i] == NULL){
+    //         perror("ERROR: Unable to allocate memory.\n");
+    //         exit(EXIT_FAILURE);
+    //     }
+
+    //     worker_params[i].the_queue = the_queue;
+    //     worker_params[i].conn_socket = conn_socket;
+    //     worker_params[i].thread_id = i;
+    //     clock_gettime(CLOCK_MONOTONIC, &worker_params[i].receipt_time);
+        
+    //     worker_id = start_worker(&worker_params[i], worker_stacks[i]);
+    //     if (worker_id < 0) {
+    //         perror("ERROR: Unable to create the child process.\n");
+    //         exit(EXIT_FAILURE);
+    //     }
+    //     printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
+    // }
+
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
@@ -196,7 +301,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	do {
-		/* IMPLEMENT ME: Receive next request from socket. */
+		in_bytes = recv(conn_socket, req, sizeof(struct request_meta), 0);
 
 		/* Don't just return if in_bytes is 0 or -1. Instead
 		 * skip the response and break out of the loop in an
@@ -204,10 +309,30 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		 * and resp varaibles, and shutdown the socket. */
 
 		/* IMPLEMENT ME: Attempt to enqueue or reject request! */
+		
+		if(in_bytes > 0){
+			int add_status = add_to_queue(*req, the_queue);
+			if (add_status == 1) { 
+				resp.req_id = req->request.req_id;  
+				resp.ack = 1;
+				printf("XR%lu:%lf,%lf,%lf\n", 
+				resp.req_id, 
+				TSPEC_TO_DOUBLE(req->request.req_timestamp), 
+				TSPEC_TO_DOUBLE(req->request.req_length), 
+				TSPEC_TO_DOUBLE(receipt_timestamp) );
+
+				send(conn_socket, &resp, sizeof(struct response), 0);
+			}	
+		}
 	} while (in_bytes > 0);
 
 	/* IMPLEMENT ME!! Write a loop to gracefully terminate all the
 	 * worker threads ! */
+	worker_done = 1; 
+
+    for (int i = 0; i < conn_params.workers; ++i) {
+        free(worker_stacks[i]);
+    }
 
 	free(the_queue);
 
@@ -222,7 +347,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
  * server. The server must accept in input a command line parameter
  * with the <port number> to bind the server to. */
 int main (int argc, char ** argv) {
-	int sockfd, retval, accepted, optval, opt;
+	int sockfd, retval, accepted, optval, opt, queue_size, workers;
 	in_port_t socket_port;
 	struct sockaddr_in addr, client;
 	struct in_addr any_address;
@@ -231,14 +356,26 @@ int main (int argc, char ** argv) {
 	struct connection_params conn_params;
 
 	/* Parse all the command line arguments */
-	/* IMPLEMENT ME!! */
+	 while ((opt = getopt(argc, argv, "q:w:")) != -1) {
+        switch (opt) {
+            case 'q':
+                queue_size = atoi(optarg);
+                break;
+            case 'w':
+                workers = atoi(optarg);
+                break;
+            default:
+                fprintf(stderr, USAGE_STRING, argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
 	/* PARSE THE COMMANDS LINE: */
 	/* 1. Detect the -q parameter and set aside the queue size in conn_params */
-	conn_params...
+	conn_params.queue_size = queue_size;
 	/* 2. Detect the -w parameter and set aside the number of threads to launch */
-	conn_params...
+	conn_params.workers = workers;
 	/* 3. Detect the port number to bind the server socket to (see HW1 and HW2) */
-	socket_port = ...
+	socket_port = atoi(argv[optind]);
 
 	/* Now onward to create the right type of socket */
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
