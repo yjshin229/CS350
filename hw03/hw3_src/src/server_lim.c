@@ -190,8 +190,6 @@ int worker_main (void * arg)
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
-		dump_queue_status(the_queue);
-
 		struct request_meta req = get_from_queue(the_queue);
 		clock_gettime(CLOCK_REALTIME, &start_timestamp);
 		busywait_timespec(req.request.req_length);
@@ -214,6 +212,8 @@ int worker_main (void * arg)
         TSPEC_TO_DOUBLE(params->receipt_timestamp), 
         TSPEC_TO_DOUBLE(start_timestamp),
         TSPEC_TO_DOUBLE(completion_timestamp));
+
+		dump_queue_status(the_queue);
 	}
 
 	return EXIT_SUCCESS;
@@ -236,7 +236,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct queue * the_queue;
 	size_t in_bytes;
 	struct timespec receipt_timestamp;
-	int worker_id, res;
+	int worker_id;
 	int  worker_done = 0;
 
 	/* The connection with the client is alive here. Let's get
@@ -281,7 +281,6 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	do {
-		worker_params.worker_done = 0;
 		in_bytes = recv(conn_socket, req, sizeof(struct request_meta), 0);
 		/* Don't just return if in_bytes is 0 or -1. Instead
          * skip the response and break out of the loop in an
@@ -291,19 +290,17 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		clock_gettime(CLOCK_MONOTONIC, &receipt_timestamp);
 		 
 		if (in_bytes < 0) {
-			worker_params.worker_done = 1;
 			break;
 		}
-    
+
 		if (add_to_queue(*req, the_queue) == 1) { 
 			resp.req_id = req->request.req_id;  
 			resp.ack = 1;
-			printf("XR%lu:%lf,%lf,%lf\n", 
+			printf("X%lu:%lf,%lf,%lf\n", 
                 resp.req_id, 
                 TSPEC_TO_DOUBLE(req->request.req_timestamp), 
                 TSPEC_TO_DOUBLE(req->request.req_length), 
                 TSPEC_TO_DOUBLE(receipt_timestamp) );
-
 			send(conn_socket, &resp, sizeof(struct response), 0);
 		}
 	} while (in_bytes > 0);
