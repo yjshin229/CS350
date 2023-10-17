@@ -64,8 +64,9 @@ sem_t * queue_notify;
 
 struct request_meta {
 	struct request request;
-
-	/* ADD REQUIRED FIELDS */
+	struct timespec receipt_timestamp;
+	struct timespec start_timestamp;
+	struct timespec completion_timestamp;
 };
 
 struct queue {
@@ -191,8 +192,9 @@ int worker_main (void * arg)
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
 		struct request_meta req = get_from_queue(the_queue);
-		clock_gettime(CLOCK_REALTIME, &start_timestamp);
+		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
 		busywait_timespec(req.request.req_length);
+		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
 
 		resp.req_id = req.request.req_id;
 		resp.ack = 0;
@@ -201,17 +203,15 @@ int worker_main (void * arg)
 		if (send_response == -1) {
 			perror("Error sending response \n");
 			break;
-		}else{
-			clock_gettime(CLOCK_MONOTONIC, &completion_timestamp);
 		}
 
 		printf("R%ld:%lf,%lf,%lf,%lf,%lf\n", 
         req.request.req_id, 
         TSPEC_TO_DOUBLE(req.request.req_timestamp),
         TSPEC_TO_DOUBLE(req.request.req_length),
-        TSPEC_TO_DOUBLE(params->receipt_timestamp), 
-        TSPEC_TO_DOUBLE(start_timestamp),
-        TSPEC_TO_DOUBLE(completion_timestamp));
+        TSPEC_TO_DOUBLE(req.receipt_timestamp), 
+        TSPEC_TO_DOUBLE(req.start_timestamp),
+        TSPEC_TO_DOUBLE(req.completion_timestamp));
 
 		dump_queue_status(the_queue);
 	}
@@ -235,7 +235,6 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct request_meta * req;
 	struct queue * the_queue;
 	size_t in_bytes;
-	struct timespec receipt_timestamp;
 	int worker_id;
 	int  worker_done = 0;
 
@@ -252,7 +251,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	the_queue = (struct queue *)malloc(sizeof(struct queue));
 	worker_params.worker_done = worker_done;  
 	worker_params.the_queue = the_queue;
-	worker_params.receipt_timestamp = receipt_timestamp;
+	
 	worker_params.conn_socket = conn_socket;
 
     if (the_queue == NULL) {
@@ -281,14 +280,13 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	do {
-		in_bytes = recv(conn_socket, req, sizeof(struct request_meta), 0);
+		in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
 		/* Don't just return if in_bytes is 0 or -1. Instead
          * skip the response and break out of the loop in an
          * orderly fashion so that we can de-allocate the req
          * and resp varaibles, and shutdown the socket. */
 
-		clock_gettime(CLOCK_MONOTONIC, &receipt_timestamp);
-		 
+		clock_gettime(CLOCK_MONOTONIC, &req->receipt_timestamp);
 		if (in_bytes < 0) {
 			break;
 		}
@@ -300,7 +298,8 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
                 resp.req_id, 
                 TSPEC_TO_DOUBLE(req->request.req_timestamp), 
                 TSPEC_TO_DOUBLE(req->request.req_length), 
-                TSPEC_TO_DOUBLE(receipt_timestamp) );
+                TSPEC_TO_DOUBLE(req->receipt_timestamp) );
+			
 			send(conn_socket, &resp, sizeof(struct response), 0);
 		}
 	} while (in_bytes > 0);
