@@ -158,9 +158,6 @@ struct request_meta get_from_queue(struct queue * the_queue)
         the_queue->front = (the_queue->front + 1) % the_queue->capacity;
         the_queue->size--;
     }
-    else {
-        perror("Error: The queue is empty!\n");
-    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -213,7 +210,7 @@ int worker_main (void * arg)
 		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
 		
 		resp.req_id = req.request.req_id;
-		resp.ack = 0;
+		resp.ack = RESP_COMPLETED;
 
 		size_t send_response = send(conn_socket, &resp, sizeof(struct response), 0);
 		if (send_response == -1) {
@@ -265,15 +262,10 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
     queue_init(the_queue, conn_params.queue_size);
 
 	struct worker_params * worker_params = malloc(sizeof(struct worker_params) * conn_params.workers);
-	void* worker_stacks[conn_params.workers];
+	void** worker_stacks = malloc(conn_params.workers * sizeof(void *));
 	
 	for (int i = 0; i < conn_params.workers; i++) {
-        worker_params[i].the_queue = the_queue;
-        worker_params[i].conn_socket = conn_socket;
-		worker_params[i].thread_id = i;
-        // clock_gettime(CLOCK_MONOTONIC, &req[i].receipt_timestamp);
-        worker_stacks[i] = malloc(STACK_SIZE);
-		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
+		worker_stacks[i] = malloc(STACK_SIZE);
 		if(worker_stacks == NULL){
 			perror("ERROR: Unable to allocate memory.\n");
       		exit(EXIT_FAILURE);
@@ -282,6 +274,13 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
             perror("ERROR: Unable to create the child process.\n");
             exit(EXIT_FAILURE);
         }
+
+        worker_params[i].conn_socket = conn_socket;
+		worker_params[i].worker_done = 0;
+        worker_params[i].the_queue = the_queue;
+		worker_params[i].thread_id = i;
+		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
+
 		printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
     }
 
@@ -305,7 +304,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 
 		if (add_to_queue(*req, the_queue) == 1) { 
 			resp.req_id = req->request.req_id;  
-			resp.ack = 1;
+			resp.ack = RESP_REJECTED;
 			sync_printf("X%lu:%lf,%lf,%lf\n", 
                 resp.req_id, 
                 TSPEC_TO_DOUBLE(req->request.req_timestamp), 
@@ -318,12 +317,12 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 
 	/* IMPLEMENT ME!! Write a loop to gracefully terminate all the
 	 * worker threads ! */
-	// for (int i = 0; i < conn_params.workers; ++i) {
-	// 	worker_params[i].worker_done = 1;
-	// 	sem_post(queue_notify);
-	// 	waitpid(-1, NULL, 0);
-    //  free(worker_stacks[i]);
-    // }
+	for (int i = 0; i < conn_params.workers; ++i) {
+		worker_params[i].worker_done = 1;
+		sem_post(queue_notify);
+		waitpid(-1, NULL, 0);
+     	free(worker_stacks[i]);
+    }
 	
 	free(the_queue);
 
