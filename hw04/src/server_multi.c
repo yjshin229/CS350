@@ -227,6 +227,15 @@ int worker_main (void * arg)
 			TSPEC_TO_DOUBLE(req.start_timestamp),
 			TSPEC_TO_DOUBLE(req.completion_timestamp)
 		);
+		// sync_printf("T%d R%lu:%lf,%lf,%lf,%lf,%lf\n", 
+		// 	params->thread_id, 
+		// 	req.request.req_id, 
+		// 	TSPEC_TO_DOUBLE(req.request.req_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.request.req_length), 
+		// 	TSPEC_TO_DOUBLE(req.receipt_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.start_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.completion_timestamp)
+		// );
 
 		dump_queue_status(params->the_queue);
 	}
@@ -323,9 +332,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		waitpid(-1, NULL, 0);
      	free(worker_stacks[i]);
     }
-	
 	free(the_queue);
-
 	free(req);
 	shutdown(conn_socket, SHUT_RDWR);
 	close(conn_socket);
