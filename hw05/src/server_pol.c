@@ -77,17 +77,20 @@ sem_t * queue_mutex;
 sem_t * queue_notify;
 /* END - Variables needed to protect the shared queue. DO NOT TOUCH */
 
-struct request_meta {
-	struct request request;
-	struct timespec receipt_timestamp;
-	struct timespec start_timestamp;
-	struct timespec completion_timestamp;
-};
 
 enum queue_policy {
 	QUEUE_FIFO,
 	QUEUE_SJN
 };
+
+struct request_meta {
+	struct request request;
+	struct timespec receipt_timestamp;
+	struct timespec start_timestamp;
+	struct timespec completion_timestamp;
+	enum queue_policy policy;
+};
+
 
 struct queue {
 	struct request_meta* items;
@@ -124,6 +127,7 @@ void queue_init(struct queue * the_queue, size_t queue_size)
 /* Add a new request <request> to the shared queue <the_queue> */
 int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 {
+	// sync_printf("Im in add_to_queue!\n");
 	int retval = 0;
 	/* QUEUE PROTECTION INTRO START --- DO NOT TOUCH */
 	sem_wait(queue_mutex);
@@ -140,22 +144,36 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 		/* The sem_post(queue_mutex) below MUST happen. */
 	} else {
 		/* If all good, add the item in the queue */
-		/* IMPLEMENT ME !!*/
 
-		/* OPTION 1: After a correct ADD operation, sort the
-		 * entire queue. */
-
-		int i;
-        for (i = the_queue->rear; i != the_queue->front - 1; i = (i - 1 + the_queue->capacity) % the_queue->capacity) {
-            if (i != -1 && timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
-                the_queue->items[(i + 1) % the_queue->capacity] = the_queue->items[i];
-            } else {
-                break;
+		if (to_add.policy == QUEUE_FIFO) {
+            the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+            the_queue->items[the_queue->rear] = to_add;
+            the_queue->size++;
+		}else if(to_add.policy == QUEUE_SJN){
+			int i;
+            for (i = the_queue->front; (i % the_queue->capacity) != (the_queue->rear + 1) % the_queue->capacity; i = (i + 1) % the_queue->capacity) {
+                if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
+                    int nextIndex = (i + 1) % the_queue->capacity;
+                    the_queue->items[i] = the_queue->items[nextIndex];
+                } else {
+                    break;
+                }
             }
-        }
-        the_queue->items[(i + 1) % the_queue->capacity] = to_add;
-        the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
-        the_queue->size++;
+            the_queue->items[i] = to_add;
+            the_queue->size++;
+			// int i;
+			// for (i = the_queue->front; i != the_queue->front - 1; i = (i - 1 + the_queue->capacity) % the_queue->capacity) {
+			// 	if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
+			// 		the_queue->items[(i + 1) % the_queue->capacity] = the_queue->items[i];
+			// 	} else {
+			// 		break;
+			// 	}
+			// }
+			// the_queue->items[(i + 1) % the_queue->capacity] = to_add;
+			// the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+			// the_queue->size++;
+			// sync_printf("Added to queue!\n");
+		}
 
 		/* OPTION 3: Do nothing different from FIFO case,
 		 * and deal with the SJN policy at dequeue time.*/
@@ -179,7 +197,12 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	/* WRITE YOUR CODE HERE! */
+	// sync_printf("The size of the queue: %d\n", the_queue->size);
+	if (the_queue->size > 0) {
+        retval = the_queue->items[the_queue->front];
+        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
+        the_queue->size--;
+    }
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* Option 3-A: Scan the queue to find the shortest request,
@@ -206,6 +229,8 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
+	// sync_printf("In DumpQueue!! queue size: %d\n", the_queue->size);
+
 	sync_printf("Q:[");
     for (int i = 0; i < the_queue->size; i++) {
 		uint64_t current_id = the_queue->items[(the_queue->front + i) % the_queue->capacity].request.req_id;
@@ -227,6 +252,9 @@ int worker_main (void * arg)
 {
 	struct timespec now;
 	struct worker_params * params = (struct worker_params *)arg;
+	struct response resp;
+	struct queue* the_queue = params->the_queue;
+	int conn_socket = params->conn_socket;
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -234,10 +262,42 @@ int worker_main (void * arg)
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
+		// sync_printf("In worker main before getting request\n");
+		struct request_meta req = get_from_queue(the_queue);
+		// sync_printf("In worker main after getting request. Req id: %d\n", req.request.req_id);
 
-		/* IMPLEMENT ME !! Main worker logic. */
+		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
+		busywait_timespec(req.request.req_length);
+		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
+		
+		resp.req_id = req.request.req_id;
+		resp.ack = RESP_COMPLETED;
 
+		size_t send_response = send(conn_socket, &resp, sizeof(struct response), 0);
+		if (send_response < 0) {
+			perror("Error sending response \n");
+			break;
+		}
+		// sync_printf("Sent Response Id: %d\n",resp.req_id);
+
+		sync_printf("T%d R%lu:%lf,%lf,%lf,%lf,%lf\n", 
+			params->thread_id, 
+			req.request.req_id, 
+			TSPEC_TO_DOUBLE(req.request.req_timestamp),
+			TSPEC_TO_DOUBLE(req.request.req_length), 
+			TSPEC_TO_DOUBLE(req.receipt_timestamp),
+			TSPEC_TO_DOUBLE(req.start_timestamp),
+			TSPEC_TO_DOUBLE(req.completion_timestamp)
+		);
+		// sync_printf("%lf,%lf,%lf,%lf,%lf\n", 
+		// 	TSPEC_TO_DOUBLE(req.request.req_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.request.req_length), 
+		// 	TSPEC_TO_DOUBLE(req.receipt_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.start_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.completion_timestamp)
+		// );
 		dump_queue_status(params->the_queue);
+		// sync_printf("request done\n");
 	}
 
 	return EXIT_SUCCESS;
@@ -299,10 +359,10 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	 * handling logic. */
 
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
-
+	req->policy = conn_params.policy;
 	do {
 		in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
-
+		// sync_printf("The current request Id (handle connection): %d\n", req->request.req_id);
 		/* Don't just return if in_bytes is 0 or -1. Instead
 		 * skip the response and break out of the loop in an
 		 * orderly fashion so that we can de-allocate the req
@@ -429,7 +489,7 @@ int main (int argc, char ** argv) {
 	}
 
 	/* Ready to accept connections! */
-	printf("INFO: Waiting for incoming connection...\n");
+	// printf("INFO: Waiting for incoming connection...\n");
 	client_len = sizeof(struct sockaddr_in);
 	accepted = accept(sockfd, (struct sockaddr *)&client, &client_len);
 
