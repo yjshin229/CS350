@@ -168,7 +168,7 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 				int idx = (the_queue->front + i) % the_queue->capacity;
 				// Assuming we are comparing based on tv_sec for simplicity
 				// Adjust as necessary for your criteria
-				if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
+				if (timespec_cmp(&to_add.request.req_length, &the_queue->items[idx].request.req_length) < 0) {
 					break;
 				}
 			}
@@ -226,7 +226,6 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	// sync_printf("The size of the queue: %d\n", the_queue->size);
 	if (the_queue->size > 0) {
         retval = the_queue->items[the_queue->front];
         the_queue->front = (the_queue->front + 1) % the_queue->capacity;
@@ -258,8 +257,6 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	// sync_printf("In DumpQueue!! queue size: %d\n", the_queue->size);
-
 	sync_printf("Q:[");
     for (int i = 0; i < the_queue->size; i++) {
 		uint64_t current_id = the_queue->items[(the_queue->front + i) % the_queue->capacity].request.req_id;
@@ -287,7 +284,7 @@ int worker_main (void * arg)
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	// sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+	sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
@@ -326,7 +323,6 @@ int worker_main (void * arg)
 		// 	TSPEC_TO_DOUBLE(req.completion_timestamp)
 		// );
 		dump_queue_status(params->the_queue);
-		// sync_printf("request done\n");
 	}
 
 	return EXIT_SUCCESS;
@@ -380,7 +376,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
 		worker_params[i].worker_id = worker_id;
 
-		// sync_printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
+		sync_printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
     }
 
 
@@ -430,7 +426,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	free(req);
 	shutdown(conn_socket, SHUT_RDWR);
 	close(conn_socket);
-	// sync_printf("INFO: Client disconnected.\n");
+	sync_printf("INFO: Client disconnected.\n");
 }
 
 
