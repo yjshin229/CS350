@@ -121,7 +121,7 @@ void queue_init(struct queue * the_queue, size_t queue_size)
     the_queue->capacity = queue_size;
     the_queue->size = 0; 
     the_queue->front = 0;
-    the_queue->rear = -1;
+    the_queue->rear = 0;
 }
 
 /* Add a new request <request> to the shared queue <the_queue> */
@@ -146,34 +146,63 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 		/* If all good, add the item in the queue */
 
 		if (to_add.policy == QUEUE_FIFO) {
-            the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
             the_queue->items[the_queue->rear] = to_add;
+            the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
             the_queue->size++;
 		}else if(to_add.policy == QUEUE_SJN){
-			int i;
-            for (i = the_queue->front; (i % the_queue->capacity) != (the_queue->rear + 1) % the_queue->capacity; i = (i + 1) % the_queue->capacity) {
-                if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
-                    int nextIndex = (i + 1) % the_queue->capacity;
-                    the_queue->items[i] = the_queue->items[nextIndex];
-                } else {
-                    break;
-                }
-            }
-            the_queue->items[i] = to_add;
-            the_queue->size++;
 			// int i;
-			// for (i = the_queue->front; i != the_queue->front - 1; i = (i - 1 + the_queue->capacity) % the_queue->capacity) {
+			// for (i = the_queue->front; i != the_queue->rear; i = (i + 1) % the_queue->capacity) {
 			// 	if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
 			// 		the_queue->items[(i + 1) % the_queue->capacity] = the_queue->items[i];
 			// 	} else {
 			// 		break;
 			// 	}
 			// }
-			// the_queue->items[(i + 1) % the_queue->capacity] = to_add;
+			// the_queue->items[i] = to_add;
 			// the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
 			// the_queue->size++;
 			// sync_printf("Added to queue!\n");
+
+			int i;
+			for (i = 0; i < the_queue->size; ++i) {
+				int idx = (the_queue->front + i) % the_queue->capacity;
+				// Assuming we are comparing based on tv_sec for simplicity
+				// Adjust as necessary for your criteria
+				if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
+					break;
+				}
+			}
+
+			// i now holds the position where we want to insert to_add
+
+			// Shift all longer requests by one spot
+			for (int j = the_queue->size; j > i; --j) {
+				int from = (the_queue->front + j - 1) % the_queue->capacity;
+				int to = (the_queue->front + j) % the_queue->capacity;
+				the_queue->items[to] = the_queue->items[from];
+			}
+
+			// Insert the new request
+			int insert_pos = (the_queue->front + i) % the_queue->capacity;
+			the_queue->items[insert_pos] = to_add;
+			the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+			the_queue->size++;
 		}
+		// for (i = the_queue->front; i != the_queue->rear; i = (i + 1) % the_queue->capacity) {
+			// 	sync_printf("current index: %d\n", i);
+			// 	if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
+			// 		sync_printf("Index to insert: %d\n", i);
+			// 		break;
+			// 	}
+			// }
+
+			// for (int j = the_queue->rear; j != i - 1; j = (j - 1 + the_queue->capacity) % the_queue->capacity) {
+			// 	the_queue->items[(j + 1) % the_queue->capacity] = the_queue->items[j];
+			// }
+
+			// the_queue->items[i] = to_add;
+			// the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
+			// the_queue->size++;
 
 		/* OPTION 3: Do nothing different from FIFO case,
 		 * and deal with the SJN policy at dequeue time.*/
@@ -258,7 +287,7 @@ int worker_main (void * arg)
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+	// sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
@@ -351,7 +380,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
 		worker_params[i].worker_id = worker_id;
 
-		sync_printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
+		// sync_printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
     }
 
 
@@ -401,7 +430,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	free(req);
 	shutdown(conn_socket, SHUT_RDWR);
 	close(conn_socket);
-	sync_printf("INFO: Client disconnected.\n");
+	// sync_printf("INFO: Client disconnected.\n");
 }
 
 
