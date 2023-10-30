@@ -53,7 +53,10 @@
 #define BACKLOG_COUNT 100
 #define USAGE_STRING				\
 	"Missing parameter. Exiting.\n"		\
-	"Usage: %s -q <queue size> -w <number of threads> <port_number>\n"
+	"Usage: %s -q <queue size> "		\
+	"-w <workers> "				\
+	"-p <policy: FIFO | SJN> "		\
+	"<port_number>\n"
 
 /* 4KB of stack for the worker thread */
 #define STACK_SIZE (4096)
@@ -76,40 +79,31 @@ sem_t * queue_notify;
 
 struct request_meta {
 	struct request request;
-	struct timespec receipt_timestamp;
-	struct timespec start_timestamp;
-	struct timespec completion_timestamp;
+
+	/* ADD REQUIRED FIELDS */
+};
+
+enum queue_policy {
+	QUEUE_FIFO,
+	QUEUE_SJN
 };
 
 struct queue {
-	struct request_meta* items;
-    int capacity; 
-    int front;
-    int rear;
-    int size;
+	/* ADD REQUIRED FIELDS */
 };
 
 struct connection_params {
-	int queue_size;
-	int workers;
+	/* ADD REQUIRED FIELDS */
 };
 
 struct worker_params {
-	int worker_done;
-    struct queue *the_queue;
-	int conn_socket;
-	int thread_id;
-	int worker_id;
+	/* ADD REQUIRED FIELDS */
 };
 
 /* Helper function to perform queue initialization */
 void queue_init(struct queue * the_queue, size_t queue_size)
 {
-	the_queue->items = (struct request_meta*)malloc(queue_size * sizeof(struct request_meta));
-    the_queue->capacity = queue_size;
-    the_queue->size = 0; 
-    the_queue->front = 0;
-    the_queue->rear = -1;
+	/* IMPLEMENT ME !! */
 }
 
 /* Add a new request <request> to the shared queue <the_queue> */
@@ -124,16 +118,24 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* Make sure that the queue is not full */
-	if (the_queue->size == the_queue->capacity) {
+	if (/* Condition to check for full queue */) {
 		/* What to do in case of a full queue */
-		retval = 1;
+
 		/* DO NOT RETURN DIRECTLY HERE. The
 		 * sem_post(queue_mutex) below MUST happen. */
 	} else {
 		/* If all good, add the item in the queue */
-		the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
-		the_queue->items[the_queue->rear] = to_add;
-		the_queue->size++;
+		/* IMPLEMENT ME !!*/
+
+		/* OPTION 1: After a correct ADD operation, sort the
+		 * entire queue. */
+
+		/* OPTION 2: Find where to place the request in the
+		 * queue and shift all the other entries by one
+		 * position to the right. */
+
+		/* OPTION 3: Do nothing different from FIFO case,
+		 * and deal with the SJN policy at dequeue time.*/
 
 		/* QUEUE SIGNALING FOR CONSUMER --- DO NOT TOUCH */
 		sem_post(queue_notify);
@@ -154,12 +156,20 @@ struct request_meta get_from_queue(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	if (the_queue->size > 0) {
-        retval = the_queue->items[the_queue->front];
-        the_queue->front = (the_queue->front + 1) % the_queue->capacity;
-        the_queue->size--;
-    }
+	/* WRITE YOUR CODE HERE! */
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
+
+	/* Option 3-A: Scan the queue to find the shortest request,
+	 * pop it, and shift all the other requests by one spot to the
+	 * left. */
+
+	/* Option 3-B: Sort the entire queue and pop the request in
+	 * the first position. */
+
+	/* NOTE: all these options only apply if you have implemented
+	 * your queue as an array. If you have employed a linked list,
+	 * the sorted insert approach is definitely the winner. Also,
+	 * in this case you are a wizard, Harry. */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
 	sem_post(queue_mutex);
@@ -173,15 +183,7 @@ void dump_queue_status(struct queue * the_queue)
 	sem_wait(queue_mutex);
 	/* QUEUE PROTECTION INTRO END --- DO NOT TOUCH */
 
-	sync_printf("Q:[");
-    for (int i = 0; i < the_queue->size; i++) {
-		uint64_t current_id = the_queue->items[(the_queue->front + i) % the_queue->capacity].request.req_id;
-        sync_printf("R%lu", current_id);
-        if (i < the_queue->size - 1) {
-            sync_printf(",");
-        }
-    }
-    sync_printf("]\n");
+	/* WRITE YOUR CODE HERE! */
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
 
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
@@ -194,9 +196,6 @@ int worker_main (void * arg)
 {
 	struct timespec now;
 	struct worker_params * params = (struct worker_params *)arg;
-	struct response resp;
-	struct queue* the_queue = params->the_queue;
-	int conn_socket = params->conn_socket;
 
 	/* Print the first alive message. */
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -205,37 +204,7 @@ int worker_main (void * arg)
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
 
-		struct request_meta req = get_from_queue(the_queue);
-		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
-		busywait_timespec(req.request.req_length);
-		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
-		
-		resp.req_id = req.request.req_id;
-		resp.ack = RESP_COMPLETED;
-
-		size_t send_response = send(conn_socket, &resp, sizeof(struct response), 0);
-		if (send_response == -1) {
-			perror("Error sending response \n");
-			break;
-		}
-
-		sync_printf("T%d R%lu:%lf,%lf,%lf,%lf,%lf\n", 
-			params->thread_id, 
-			req.request.req_id, 
-			TSPEC_TO_DOUBLE(req.request.req_timestamp),
-			TSPEC_TO_DOUBLE(req.request.req_length), 
-			TSPEC_TO_DOUBLE(req.receipt_timestamp),
-			TSPEC_TO_DOUBLE(req.start_timestamp),
-			TSPEC_TO_DOUBLE(req.completion_timestamp)
-		);
-		// sync_printf("T%d %lf,%lf,%lf,%lf,%lf\n", 
-		// 	params->thread_id, 
-		// 	TSPEC_TO_DOUBLE(req.request.req_timestamp),
-		// 	TSPEC_TO_DOUBLE(req.request.req_length), 
-		// 	TSPEC_TO_DOUBLE(req.receipt_timestamp),
-		// 	TSPEC_TO_DOUBLE(req.start_timestamp),
-		// 	TSPEC_TO_DOUBLE(req.completion_timestamp)
-		// );
+		/* IMPLEMENT ME !! Main worker logic. */
 
 		dump_queue_status(params->the_queue);
 	}
@@ -247,8 +216,7 @@ int worker_main (void * arg)
  * clone() system call*/
 int start_worker(void * params, void * worker_stack)
 {
-	int pid = clone(worker_main, (char*)worker_stack + STACK_SIZE,  CLONE_THREAD | CLONE_VM | CLONE_SIGHAND | CLONE_FS | CLONE_FILES | CLONE_SYSVSEM, params);
-    return pid;
+	/* IMPLEMENT ME !! */
 }
 
 /* Main function to handle connection with the client. This function
@@ -259,41 +227,9 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct request_meta * req;
 	struct queue * the_queue;
 	size_t in_bytes;
-	struct response resp;
 
-	int worker_id;
-
-	the_queue = (struct queue *)malloc(sizeof(struct queue));
-	if (the_queue == NULL) {
-        perror("Failed to allocate memory for the queue");
-        exit(EXIT_FAILURE);
-    }
-    queue_init(the_queue, conn_params.queue_size);
-
-	struct worker_params * worker_params = malloc(sizeof(struct worker_params) * conn_params.workers);
-	void** worker_stacks = malloc(conn_params.workers * sizeof(void *));
-	
-	for (int i = 0; i < conn_params.workers; i++) {
-		worker_stacks[i] = malloc(STACK_SIZE);
-		if(worker_stacks == NULL){
-			perror("ERROR: Unable to allocate memory.\n");
-      		exit(EXIT_FAILURE);
-		}
-		if (worker_id < 0) {
-            perror("ERROR: Unable to create the child process.\n");
-            exit(EXIT_FAILURE);
-        }
-
-        worker_params[i].conn_socket = conn_socket;
-		worker_params[i].worker_done = 0;
-        worker_params[i].the_queue = the_queue;
-		worker_params[i].thread_id = i;
-		worker_id = start_worker(&worker_params[i], worker_stacks[i]);
-		worker_params[i].worker_id = worker_id;
-
-		printf("INFO: Worker thread started. Thread ID = %d\n", worker_id);
-    }
-
+	/* IMPLEMENT ME!! Write a loop to start and initialize all the
+	 * worker threads ! */
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
@@ -301,42 +237,21 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
 	do {
-		in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
+		/* IMPLEMENT ME: Receive next request from socket. */
+
 		/* Don't just return if in_bytes is 0 or -1. Instead
 		 * skip the response and break out of the loop in an
 		 * orderly fashion so that we can de-allocate the req
 		 * and resp varaibles, and shutdown the socket. */
 
-		clock_gettime(CLOCK_MONOTONIC, &req->receipt_timestamp);
-		if (in_bytes < 0) {
-			break;
-		}
-
-		if (add_to_queue(*req, the_queue) == 1) { 
-			resp.req_id = req->request.req_id;  
-			resp.ack = RESP_REJECTED;
-			sync_printf("X%lu:%lf,%lf,%lf\n", 
-                resp.req_id, 
-                TSPEC_TO_DOUBLE(req->request.req_timestamp), 
-                TSPEC_TO_DOUBLE(req->request.req_length), 
-                TSPEC_TO_DOUBLE(req->receipt_timestamp));
-			
-			send(conn_socket, &resp, sizeof(struct response), 0);
-		}
+		/* IMPLEMENT ME: Attempt to enqueue or reject request! */
 	} while (in_bytes > 0);
 
 	/* IMPLEMENT ME!! Write a loop to gracefully terminate all the
 	 * worker threads ! */
-	for (int i = 0; i < conn_params.workers; ++i) {
-		worker_params[i].worker_done = 1;
-		sem_post(queue_notify);
-		waitpid(worker_params[i].worker_id, NULL, 0);
-    }
 
-	for(int i = 0; i < conn_params.workers; ++i){
-		free(worker_stacks[i]);
-	}
 	free(the_queue);
+
 	free(req);
 	shutdown(conn_socket, SHUT_RDWR);
 	close(conn_socket);
@@ -348,7 +263,7 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
  * server. The server must accept in input a command line parameter
  * with the <port number> to bind the server to. */
 int main (int argc, char ** argv) {
-	int sockfd, retval, accepted, optval, opt, queue_size, workers;
+	int sockfd, retval, accepted, optval, opt;
 	in_port_t socket_port;
 	struct sockaddr_in addr, client;
 	struct in_addr any_address;
@@ -357,27 +272,14 @@ int main (int argc, char ** argv) {
 	struct connection_params conn_params;
 
 	/* Parse all the command line arguments */
-	while ((opt = getopt(argc, argv, "q:w:")) != -1) {
-        switch (opt) {
-            case 'q':
-                queue_size = atoi(optarg);
-                break;
-            case 'w':
-                workers = atoi(optarg);
-                break;
-            default:
-                fprintf(stderr, USAGE_STRING, argv[0]);
-                exit(EXIT_FAILURE);
-        }
-    }
-
+	/* IMPLEMENT ME!! */
 	/* PARSE THE COMMANDS LINE: */
 	/* 1. Detect the -q parameter and set aside the queue size in conn_params */
-	conn_params.queue_size = queue_size;
+	conn_params...
 	/* 2. Detect the -w parameter and set aside the number of threads to launch */
-	conn_params.workers = workers;
+	conn_params...
 	/* 3. Detect the port number to bind the server socket to (see HW1 and HW2) */
-	socket_port = atoi(argv[optind]);
+	socket_port = ...
 
 	/* Now onward to create the right type of socket */
 	sockfd = socket(AF_INET, SOCK_STREAM, 0);
