@@ -127,7 +127,6 @@ void queue_init(struct queue * the_queue, size_t queue_size)
 /* Add a new request <request> to the shared queue <the_queue> */
 int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 {
-	// sync_printf("Im in add_to_queue!\n");
 	int retval = 0;
 	/* QUEUE PROTECTION INTRO START --- DO NOT TOUCH */
 	sem_wait(queue_mutex);
@@ -150,32 +149,15 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
             the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
             the_queue->size++;
 		}else if(to_add.policy == QUEUE_SJN){
-			// int i;
-			// for (i = the_queue->front; i != the_queue->rear; i = (i + 1) % the_queue->capacity) {
-			// 	if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
-			// 		the_queue->items[(i + 1) % the_queue->capacity] = the_queue->items[i];
-			// 	} else {
-			// 		break;
-			// 	}
-			// }
-			// the_queue->items[i] = to_add;
-			// the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
-			// the_queue->size++;
-			// sync_printf("Added to queue!\n");
-
+		
 			int i;
 			for (i = 0; i < the_queue->size; ++i) {
 				int idx = (the_queue->front + i) % the_queue->capacity;
-				// Assuming we are comparing based on tv_sec for simplicity
-				// Adjust as necessary for your criteria
+				
 				if (timespec_cmp(&to_add.request.req_length, &the_queue->items[idx].request.req_length) < 0) {
 					break;
 				}
 			}
-
-			// i now holds the position where we want to insert to_add
-
-			// Shift all longer requests by one spot
 			for (int j = the_queue->size; j > i; --j) {
 				int from = (the_queue->front + j - 1) % the_queue->capacity;
 				int to = (the_queue->front + j) % the_queue->capacity;
@@ -188,24 +170,6 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 			the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
 			the_queue->size++;
 		}
-		// for (i = the_queue->front; i != the_queue->rear; i = (i + 1) % the_queue->capacity) {
-			// 	sync_printf("current index: %d\n", i);
-			// 	if (timespec_cmp(&to_add.request.req_length, &the_queue->items[i].request.req_length) < 0) {
-			// 		sync_printf("Index to insert: %d\n", i);
-			// 		break;
-			// 	}
-			// }
-
-			// for (int j = the_queue->rear; j != i - 1; j = (j - 1 + the_queue->capacity) % the_queue->capacity) {
-			// 	the_queue->items[(j + 1) % the_queue->capacity] = the_queue->items[j];
-			// }
-
-			// the_queue->items[i] = to_add;
-			// the_queue->rear = (the_queue->rear + 1) % the_queue->capacity;
-			// the_queue->size++;
-
-		/* OPTION 3: Do nothing different from FIFO case,
-		 * and deal with the SJN policy at dequeue time.*/
 
 		/* QUEUE SIGNALING FOR CONSUMER --- DO NOT TOUCH */
 		sem_post(queue_notify);
@@ -288,9 +252,7 @@ int worker_main (void * arg)
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
-		// sync_printf("In worker main before getting request\n");
 		struct request_meta req = get_from_queue(the_queue);
-		// sync_printf("In worker main after getting request. Req id: %d\n", req.request.req_id);
 
 		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
 		busywait_timespec(req.request.req_length);
@@ -304,7 +266,6 @@ int worker_main (void * arg)
 			perror("Error sending response \n");
 			break;
 		}
-		// sync_printf("Sent Response Id: %d\n",resp.req_id);
 
 		sync_printf("T%d R%lu:%lf,%lf,%lf,%lf,%lf\n", 
 			params->thread_id, 
@@ -387,7 +348,6 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	req->policy = conn_params.policy;
 	do {
 		in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
-		// sync_printf("The current request Id (handle connection): %d\n", req->request.req_id);
 		/* Don't just return if in_bytes is 0 or -1. Instead
 		 * skip the response and break out of the loop in an
 		 * orderly fashion so that we can de-allocate the req
