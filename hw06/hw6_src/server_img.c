@@ -119,10 +119,17 @@ enum worker_command {
 	WORKERS_STOP
 };
 
+struct ImageInfo {
+	struct image* img; 
+	uint32_t id;
+};
+#define MAX_IMAGES 100
+struct ImageInfo imageArray[MAX_IMAGES];
+
 uint64_t image_id_counter = 0;
 
-uint64_t generate_image_id() {
-    return image_id_counter++; 
+void generate_image_id() {
+    image_id_counter++; 
 }
 
 
@@ -224,13 +231,16 @@ int worker_main (void * arg)
 
 	/* Okay, now execute the main logic. */
 	while (!params->worker_done) {
-
+		// sync_printf("in worker main while loop\n");
 		struct request_meta req;
 		struct response resp;
+		if(params->the_queue->available ==  params->the_queue->max_size){
+			continue;
+		}
 		req = get_from_queue(params->the_queue);
+		// sync_printf("got request\n");
 		uint8_t err;
-		struct image* req_img;
-		uint64_t resp_image_id;
+		struct image *new_img;
 
 		/* Detect wakeup after termination asserted */
 		if (params->worker_done)
@@ -240,57 +250,90 @@ int worker_main (void * arg)
 
 		/* IMPLEMENT ME! Take the necessary steps to process
 		 * the client's request for image processing. */
-
-		switch(req.request.img_op){
-			case IMG_ROT90CLKW:
-				if(req.request.overwrite == 0){
-					struct image* req_img = cloneImage(recvImage(params->conn_socket),err); 
-				}else{
-					struct image* req_img = recvImage(params->conn_socket);
-				}
-				rotate90Clockwise(req_img,err);
-				break;
-			case IMG_BLUR:
-				if(req.request.overwrite == 0){
-					struct image* req_img = cloneImage(recvImage(params->conn_socket),err); 
-				}else{
-					struct image* req_img = recvImage(params->conn_socket);
-				}
-				blurImage(req_img);
-				break;
+		 switch(req.request.img_op) {
+            case IMG_ROT90CLKW:
+				// sync_printf("in IMG_ROT90CLKW\n");
+                // Rotate image or its copy based on overwrite
+                if(req.request.overwrite == 1) {
+                    new_img = rotate90Clockwise(imageArray[image_id_counter].img,err);
+					imageArray[image_id_counter].img = new_img;
+                    resp.img_id = req.request.img_id;
+                } else {
+                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    new_img = rotate90Clockwise(new_img,err);
+                    // Store the new image and ID
+                    imageArray[image_id_counter].img = new_img;
+                    resp.img_id = image_id_counter; // Send new image ID back
+                }
+                break;
+            case IMG_BLUR:
+				// sync_printf("in IMG_BLUR\n");
+                if(req.request.overwrite == 1) {
+                    new_img = blurImage(imageArray[image_id_counter].img);
+					imageArray[image_id_counter].img = new_img;
+                    resp.img_id = req.request.img_id;
+                } else {
+                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    new_img = blurImage(new_img);
+                    imageArray[image_id_counter].img = new_img;
+					resp.img_id = image_id_counter; // Send new image ID back
+                }
+                break;
 			case IMG_SHARPEN:
-				if(req.request.overwrite == 0){
-					struct image* req_img = cloneImage(recvImage(params->conn_socket),err); 
-				}else{
-					struct image* req_img = recvImage(params->conn_socket);
-				}
-				sharpenImage(req_img);
+				// sync_printf("in IMG_SHARPEN\n");
+				if(req.request.overwrite == 1) {
+                    new_img = sharpenImage(imageArray[image_id_counter].img);
+					imageArray[image_id_counter].img = new_img;
+                    resp.img_id = req.request.img_id;
+                } else {
+                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    sharpenImage(new_img);
+                    // Store the new image and ID
+                    imageArray[image_id_counter].img = new_img;
+					resp.img_id = image_id_counter; // Send new image ID back
+                }
 				break;
 			case IMG_VERTEDGES:
-				if(req.request.overwrite == 0){
-					struct image* req_img = cloneImage(recvImage(params->conn_socket),err); 
-				}else{
-					struct image* req_img = recvImage(params->conn_socket);
-				}
-				detectVerticalEdges(req_img);
+				// sync_printf("in IMG_VERTEDGES\n");
+				if(req.request.overwrite == 1) {
+                    new_img = detectVerticalEdges(imageArray[image_id_counter].img);
+					imageArray[image_id_counter].img = new_img;
+                    resp.img_id = req.request.img_id;
+                } else {
+                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    detectVerticalEdges(new_img);
+                    // Store the new image and ID
+                    imageArray[image_id_counter].img = new_img;
+					resp.img_id = image_id_counter; // Send new image ID back
+                }
 				break;
 			case IMG_HORIZEDGES:
-				if(req.request.overwrite == 0){
-					struct image* req_img = cloneImage(recvImage(params->conn_socket),err); 
-				}else{
-					struct image* req_img = recvImage(params->conn_socket);
-				}
-				detectHorizontalEdges(req_img);
+				// sync_printf("in IMG_HORIZEDGES\n");
+				if(req.request.overwrite == 1) {
+                    new_img = detectHorizontalEdges(imageArray[image_id_counter].img);
+					imageArray[image_id_counter].img = new_img;
+                    resp.img_id = req.request.img_id;
+                } else {
+                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    detectHorizontalEdges(new_img);
+                    imageArray[image_id_counter].img = new_img;
+					resp.img_id = image_id_counter; // Send new image ID back
+                }
 				break;
 			case IMG_RETRIEVE:
-				struct image* req_img = recvImage(params->conn_socket);
-				sendImage(req_img, params->conn_socket);
+				// sync_printf("in IMG_RETRIEVE\n");
+				resp.img_id = req.request.img_id;
+				generate_image_id();
+				imageArray[image_id_counter].img = imageArray[image_id_counter-1].img;
+				imageArray[image_id_counter].id = image_id_counter;
 				break;
-    		default:
-				resp.ack = RESP_REJECTED; 
+			default:
+				resp.ack = RESP_REJECTED;
 				break;
-		}
+				
+			}
 
+		
 		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
 
 		/* Now provide a response! */
@@ -299,29 +342,41 @@ int worker_main (void * arg)
 
 		/* IMPLEMENT ME! Set the img_id field for the response
 		 * here, if necessary. */
-		if(req.request.overwrite == 0){
-			resp_image_id = generate_image_id();
-		}else{
-			resp_image_id = req.request.img_id;
-		}
-		resp.img_id = resp_image_id;
 		send(params->conn_socket, &resp, sizeof(struct response), 0);
+		// sync_printf("sent response\n");
+
+		if (req.request.img_op == IMG_RETRIEVE) {
+			printf("INFO: Sending image %ld\n", req.request.img_id);
+			sendImage(imageArray[image_id_counter].img , params->conn_socket); 
+		}
 
 		/* IMPLEMENT ME! Print out the post-processing status
 		 * report. */
-		sync_printf("T%d R%lu:%lf,%d,%lf,%lf,%lf,%lf,%lf\n", 
-			1,
+		sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+			0,
 			req.request.req_id, 
 			TSPEC_TO_DOUBLE(req.request.req_timestamp),
+			__opcode_strings[req.request.img_op],
 			req.request.overwrite,
 			req.request.img_id,
-			resp_image_id,
+			image_id_counter,
 			TSPEC_TO_DOUBLE(req.receipt_timestamp),
 			TSPEC_TO_DOUBLE(req.start_timestamp),
 			TSPEC_TO_DOUBLE(req.completion_timestamp)
 		);
+		// sync_printf("printed lines\n");
 
 		dump_queue_status(params->the_queue);
+		// sync_printf("dumped queue status\n");
+		// if (image_id_counter && req.request.overwrite == 0) {
+        //     deleteImage(imageArray[image_id_counter].img);
+        //     imageArray[new_image_id % MAX_IMAGES].img = NULL; // Clear the entry
+        // }
+
+        // // Cleanup the received image if it was not supposed to be overwritten
+        // if (req.request.overwrite == 1) {
+        //     deleteImage(img);
+        // }
 	}
 
 	return EXIT_SUCCESS;
@@ -499,38 +554,63 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 			 * so, handle the operation right away,
 			 * reading in the full image payload, replying
 			 * to the server, and bypassing the queue. */
-			if(req->request.img_op == IMG_REGISTER){
+			if (req->request.img_op == IMG_REGISTER) {
+				clock_gettime(CLOCK_MONOTONIC, &req->start_timestamp);
 				struct image *img = recvImage(conn_socket);
+				struct response resp;
 
-				if(img != NULL){
-					uint64_t image_id = generate_image_id();
+				if (img != NULL) {
+					generate_image_id();  // Assign an ID to the image
 
-					struct response resp;
+					if (image_id_counter < MAX_IMAGES) {
+						imageArray[image_id_counter].img = img;   // Store the image in the array
+						imageArray[image_id_counter].id = image_id_counter;  // Store the id in the array
+
+						// Set response data
+						resp.req_id = req->request.req_id;
+						resp.img_id = image_id_counter;
+						resp.ack = RESP_COMPLETED;  // Assuming RESP_ACCEPTED is defined as 0
+
+						clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
+
+						sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+                        0,
+                        req->request.req_id, 
+                        TSPEC_TO_DOUBLE(req->request.req_timestamp),
+                        __opcode_strings[req->request.img_op],
+                        req->request.overwrite,
+                        req->request.img_id,
+                        image_id_counter,
+                        TSPEC_TO_DOUBLE(req->receipt_timestamp),
+                        TSPEC_TO_DOUBLE(req->start_timestamp),
+                        TSPEC_TO_DOUBLE(req->completion_timestamp)
+                        );
+                    	dump_queue_status(the_queue);
+
+					} else {
+						// No space left in the array to store new image
+						deleteImage(img);  // Assuming this function frees the image
+						resp.req_id = req->request.req_id;
+						resp.img_id = 0;  // Or some invalid ID to indicate failure
+						resp.ack = RESP_REJECTED;  // Assuming RESP_REJECTED is defined as 1
+					}
+				} else {
 					resp.req_id = req->request.req_id;
-					resp.img_id = image_id;
-					resp.ack = RESP_COMPLETED;
-
-					send(conn_socket, &resp, sizeof(struct response), 0);
-
-					dump_queue_status(the_queue);
-
-					// free_image(img);
-				}else{
-					struct response resp;
-					resp.req_id = req->request.req_id;
-					resp.img_id = 0; // No image ID since reception failed
-					resp.ack = RESP_REJECTED;
-
-					send(conn_socket, &resp, sizeof(struct response), 0);
+					resp.img_id = 0;  // Or some invalid ID to indicate failure
+					resp.ack = RESP_REJECTED;  // Assuming RESP_REJECTED is defined as 1
 				}
 
-				continue;
-			}
+				send(conn_socket, &resp, sizeof(struct response), 0);
+				// sync_printf("sent response for img register\n");
+				continue;  // Skip the rest of the loop and wait for next request
+			}					
 
 			res = add_to_queue(*req, the_queue);
+            // sync_printf("added to queue\n");
 
 			/* The queue is full if the return value is 1 */
 			if (res) {
+				// sync_printf("rejected from queue\n");
 				struct response resp;
 				/* Now provide a response! */
 				resp.req_id = req->request.req_id;
@@ -538,11 +618,13 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 				send(conn_socket, &resp, sizeof(struct response), 0);
 
 				sync_printf("X%ld:%lf,%lf,%lf\n", req->request.req_id,
-				       TSPEC_TO_DOUBLE(req->request.req_timestamp),
-				       TSPEC_TO_DOUBLE(req->request.req_length),
-				       TSPEC_TO_DOUBLE(req->receipt_timestamp)
+					TSPEC_TO_DOUBLE(req->request.req_timestamp),
+					TSPEC_TO_DOUBLE(req->request.req_length),
+					TSPEC_TO_DOUBLE(req->receipt_timestamp)
 					);
 			}
+			
+			
 		}
 	} while (in_bytes > 0);
 
