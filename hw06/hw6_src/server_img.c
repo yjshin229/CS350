@@ -123,10 +123,84 @@ struct ImageInfo {
 	struct image* img; 
 	uint32_t id;
 };
+
+struct ImageArray {
+    struct ImageInfo* images;
+    size_t capacity;
+    size_t size;
+};
+
 #define MAX_IMAGES 100
-struct ImageInfo imageArray[MAX_IMAGES];
+// struct ImageInfo imageArray[MAX_IMAGES];
+struct ImageArray imageArray;
 
 uint64_t image_id_counter = 0;
+
+// Function to initialize the dynamic array
+void initImageArray(struct ImageArray* array) {
+    array->images = (struct ImageInfo*)malloc(MAX_IMAGES * sizeof(struct ImageInfo));
+    if (!array->images) {
+        // Handle allocation failure
+        exit(EXIT_FAILURE);
+    }
+    array->capacity = MAX_IMAGES;
+    array->size = 0;
+}
+
+void addImageInfo(struct ImageArray* array, uint32_t id, struct image* img) {
+    // Check if we need to resize the array
+    if (array->size >= array->capacity) {
+        // Resize array if necessary
+        size_t new_capacity = array->capacity * 2;
+        struct ImageInfo* new_images = (struct ImageInfo*)realloc(array->images, new_capacity * sizeof(struct ImageInfo));
+        if (!new_images) {
+            // Handle allocation failure
+            exit(EXIT_FAILURE);
+        }
+        array->images = new_images;
+        array->capacity = new_capacity;
+    }
+
+    // Add the new image information
+    array->images[array->size].img = img;
+    array->images[array->size].id = id;
+    array->size++;
+}
+
+
+// Function to free the dynamic array
+void freeImageArray(struct ImageArray* array) {
+    for (size_t i = 0; i < array->size; ++i) {
+        // Assuming deleteImage frees the image memory
+        deleteImage(array->images[i].img);
+    }
+    free(array->images);
+    array->images = NULL;
+    array->capacity = 0;
+    array->size = 0;
+}
+
+struct image* getImageById(struct ImageArray* array, uint32_t id) {
+    for (size_t i = 0; i < array->size; i++) {
+        if (array->images[i].id == id) {
+            return array->images[i].img;
+        }
+    }
+    return NULL; // Image not found
+}
+
+void replaceImage(struct ImageArray* array, uint32_t idx, struct image* new_img) {
+    if (idx < array->size) {
+        // Assuming deleteImage frees the image memory
+        deleteImage(array->images[idx].img); // Free the old image
+
+        // Replace with the new image
+        array->images[idx].img = new_img;
+        array->images[idx].id = idx; // if you need to update the ID to match the index
+    } else {
+        // Handle the error: index out of bounds
+    }
+}
 
 void queue_init(struct queue * the_queue, size_t queue_size, enum queue_policy policy)
 {
@@ -233,9 +307,9 @@ int worker_main (void * arg)
 			continue;
 		}
 		req = get_from_queue(params->the_queue);
-		// sync_printf("got request\n");
 		uint8_t err;
 		uint64_t current_idx = req.request.img_id;
+		struct image *new_img;
 
 		/* Detect wakeup after termination asserted */
 		if (params->worker_done && params->the_queue->available ==  params->the_queue->max_size)
@@ -248,70 +322,34 @@ int worker_main (void * arg)
 		 switch(req.request.img_op) {
             case IMG_ROT90CLKW:
 				// sync_printf("in IMG_ROT90CLKW\n");
-                if(req.request.overwrite == 1) {
-                    struct image *rotate_img = rotate90Clockwise(imageArray[current_idx].img,err);
-					imageArray[current_idx].img = rotate_img;
-                    resp.img_id = current_idx;
-                } else {
-                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
-                    new_img = rotate90Clockwise(new_img,err);
-                    imageArray[current_idx].img = new_img;
-                    resp.img_id = image_id_counter; // Send new image ID back
-                }
+				new_img = rotate90Clockwise(getImageById(&imageArray, current_idx),err);
+				replaceImage(&imageArray, current_idx, new_img);
+				resp.img_id = current_idx;
                 break;
             case IMG_BLUR:
 				// sync_printf("in IMG_BLUR\n");
-                if(req.request.overwrite == 1) {
-                    struct image *blur_img = blurImage(imageArray[current_idx].img);
-					imageArray[current_idx].img = blur_img;
-                    resp.img_id = current_idx;
-			
-                } else {
-                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
-                    new_img = blurImage(new_img);
-                    imageArray[current_idx].img = new_img;
-					resp.img_id = image_id_counter; // Send new image ID back
-                }
+				new_img = blurImage(getImageById(&imageArray, current_idx));
+				replaceImage(&imageArray, current_idx, new_img);
+				resp.img_id = current_idx;
                 break;
 			case IMG_SHARPEN:
 				// sync_printf("in IMG_SHARPEN\n");
-				if(req.request.overwrite == 1) {
-                    struct image *sharpen_img = sharpenImage(imageArray[current_idx].img);
-					imageArray[current_idx].img = sharpen_img;
-                    resp.img_id = current_idx;
-                } else {
-                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
-                    sharpenImage(new_img);
-                    // Store the new image and ID
-                    imageArray[current_idx].img = new_img;
-					resp.img_id = image_id_counter; // Send new image ID back
-                }
+				new_img = sharpenImage(getImageById(&imageArray, current_idx));
+				replaceImage(&imageArray, current_idx, new_img);
+				resp.img_id = current_idx;
 				break;
 			case IMG_VERTEDGES:
 				// sync_printf("in IMG_VERTEDGES\n");
-				if(req.request.overwrite == 1) {
-                    struct image *vert_img = detectVerticalEdges(imageArray[current_idx].img);
-					imageArray[current_idx].img = vert_img;
-                    resp.img_id = current_idx;
-                } else {
-                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
-                    detectVerticalEdges(new_img);
-                    imageArray[current_idx].img = new_img;
-					resp.img_id = image_id_counter; // Send new image ID back
-                }
+				new_img = detectVerticalEdges(getImageById(&imageArray, current_idx));
+				replaceImage(&imageArray, current_idx, new_img);
+				resp.img_id = current_idx;
 				break;
 			case IMG_HORIZEDGES:
 				// sync_printf("in IMG_HORIZEDGES\n");
-				if(req.request.overwrite == 1) {
-                    struct image *hor_img = detectHorizontalEdges(imageArray[current_idx].img);
-					imageArray[current_idx].img = hor_img;
-                    resp.img_id = current_idx;
-                } else {
-                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
-                    detectHorizontalEdges(new_img);
-                    imageArray[current_idx].img = new_img;
-					resp.img_id = image_id_counter; // Send new image ID back
-                }
+				// struct image *current_image = getImageById(&imageArray, current_idx);
+				new_img = detectHorizontalEdges(getImageById(&imageArray, current_idx));
+				replaceImage(&imageArray, current_idx, new_img);
+				resp.img_id = current_idx;
 				break;
 			case IMG_RETRIEVE:
 				// sync_printf("in IMG_RETRIEVE\n");
@@ -336,7 +374,7 @@ int worker_main (void * arg)
 
 		if (req.request.img_op == IMG_RETRIEVE) {
 			// printf("INFO: Sending image %ld\n", req.request.img_id);
-			sendImage(imageArray[current_idx].img , params->conn_socket); 
+			sendImage(getImageById(&imageArray, current_idx), params->conn_socket); 
 		}
 
 		/* IMPLEMENT ME! Print out the post-processing status
@@ -353,19 +391,9 @@ int worker_main (void * arg)
 			TSPEC_TO_DOUBLE(req.start_timestamp),
 			TSPEC_TO_DOUBLE(req.completion_timestamp)
 		);
-		// sync_printf("printed lines\n");
 
 		dump_queue_status(params->the_queue);
-		// sync_printf("dumped queue status\n");
-		// if (image_id_counter && req.request.overwrite == 0) {
-        //     deleteImage(imageArray[image_id_counter].img);
-        //     imageArray[new_image_id % MAX_IMAGES].img = NULL; // Clear the entry
-        // }
-
-        // // Cleanup the received image if it was not supposed to be overwritten
-        // if (req.request.overwrite == 1) {
-        //     deleteImage(img);
-        // }
+	
 	}
 
 	return EXIT_SUCCESS;
@@ -550,8 +578,14 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 
 				if (img != NULL) {
 					 // Assign an ID to the image
-					imageArray[image_id_counter].img = img;   // Store the image in the array
-					imageArray[image_id_counter].id = image_id_counter;  // Store the id in the array
+					// imageArray[image_id_counter].img = img;   // Store the image in the array
+					// imageArray[image_id_counter].id = image_id_counter;  // Store the id in the array
+
+					// struct ImageInfo newImageInfo;
+					// newImageInfo.img = img;   // Store the pointer to the image
+					// newImageInfo.id = req->request.img_id;
+
+					addImageInfo(&imageArray, image_id_counter, img);
 
 					resp.req_id = req->request.req_id;
 					resp.img_id = image_id_counter;
@@ -625,6 +659,7 @@ int main (int argc, char ** argv) {
 	struct in_addr any_address;
 	socklen_t client_len;
 	struct connection_params conn_params;
+
 	conn_params.queue_size = 0;
 	conn_params.queue_policy = QUEUE_FIFO;
 	conn_params.workers = 1;
@@ -725,6 +760,8 @@ int main (int argc, char ** argv) {
 		return EXIT_FAILURE;
 	}
 
+	initImageArray(&imageArray);
+
 	/* Initilize threaded printf mutex */
 	printf_mutex = (sem_t *)malloc(sizeof(sem_t));
 	retval = sem_init(printf_mutex, 0, 1);
@@ -756,6 +793,7 @@ int main (int argc, char ** argv) {
 
 	free(queue_mutex);
 	free(queue_notify);
+	freeImageArray(&imageArray);
 
 	close(sockfd);
 	return EXIT_SUCCESS;
