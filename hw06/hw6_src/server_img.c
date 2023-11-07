@@ -321,38 +321,32 @@ int worker_main (void * arg)
 		 * the client's request for image processing. */
 		 switch(req.request.img_op) {
             case IMG_ROT90CLKW:
-				// sync_printf("in IMG_ROT90CLKW\n");
 				new_img = rotate90Clockwise(getImageById(&imageArray, current_idx),err);
 				replaceImage(&imageArray, current_idx, new_img);
 				resp.img_id = current_idx;
+				
                 break;
             case IMG_BLUR:
-				// sync_printf("in IMG_BLUR\n");
 				new_img = blurImage(getImageById(&imageArray, current_idx));
 				replaceImage(&imageArray, current_idx, new_img);
 				resp.img_id = current_idx;
                 break;
 			case IMG_SHARPEN:
-				// sync_printf("in IMG_SHARPEN\n");
 				new_img = sharpenImage(getImageById(&imageArray, current_idx));
 				replaceImage(&imageArray, current_idx, new_img);
 				resp.img_id = current_idx;
 				break;
 			case IMG_VERTEDGES:
-				// sync_printf("in IMG_VERTEDGES\n");
 				new_img = detectVerticalEdges(getImageById(&imageArray, current_idx));
 				replaceImage(&imageArray, current_idx, new_img);
 				resp.img_id = current_idx;
 				break;
 			case IMG_HORIZEDGES:
-				// sync_printf("in IMG_HORIZEDGES\n");
-				// struct image *current_image = getImageById(&imageArray, current_idx);
 				new_img = detectHorizontalEdges(getImageById(&imageArray, current_idx));
 				replaceImage(&imageArray, current_idx, new_img);
 				resp.img_id = current_idx;
 				break;
 			case IMG_RETRIEVE:
-				// sync_printf("in IMG_RETRIEVE\n");
 				resp.img_id = req.request.img_id;
 				break;
 			default:
@@ -391,6 +385,7 @@ int worker_main (void * arg)
 			TSPEC_TO_DOUBLE(req.start_timestamp),
 			TSPEC_TO_DOUBLE(req.completion_timestamp)
 		);
+
 
 		dump_queue_status(params->the_queue);
 	
