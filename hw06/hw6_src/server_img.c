@@ -128,11 +128,6 @@ struct ImageInfo imageArray[MAX_IMAGES];
 
 uint64_t image_id_counter = 0;
 
-void generate_image_id() {
-    image_id_counter++; 
-}
-
-
 void queue_init(struct queue * the_queue, size_t queue_size, enum queue_policy policy)
 {
 	the_queue->rd_pos = 0;
@@ -240,10 +235,10 @@ int worker_main (void * arg)
 		req = get_from_queue(params->the_queue);
 		// sync_printf("got request\n");
 		uint8_t err;
-		struct image *new_img;
+		uint64_t current_idx = req.request.img_id;
 
 		/* Detect wakeup after termination asserted */
-		if (params->worker_done)
+		if (params->worker_done && params->the_queue->available ==  params->the_queue->max_size)
 			break;
 
 		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
@@ -253,84 +248,78 @@ int worker_main (void * arg)
 		 switch(req.request.img_op) {
             case IMG_ROT90CLKW:
 				// sync_printf("in IMG_ROT90CLKW\n");
-                // Rotate image or its copy based on overwrite
                 if(req.request.overwrite == 1) {
-                    new_img = rotate90Clockwise(imageArray[image_id_counter].img,err);
-					imageArray[image_id_counter].img = new_img;
-                    resp.img_id = req.request.img_id;
+                    struct image *rotate_img = rotate90Clockwise(imageArray[current_idx].img,err);
+					imageArray[current_idx].img = rotate_img;
+                    resp.img_id = current_idx;
                 } else {
-                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
                     new_img = rotate90Clockwise(new_img,err);
-                    // Store the new image and ID
-                    imageArray[image_id_counter].img = new_img;
+                    imageArray[current_idx].img = new_img;
                     resp.img_id = image_id_counter; // Send new image ID back
                 }
                 break;
             case IMG_BLUR:
 				// sync_printf("in IMG_BLUR\n");
                 if(req.request.overwrite == 1) {
-                    new_img = blurImage(imageArray[image_id_counter].img);
-					imageArray[image_id_counter].img = new_img;
-                    resp.img_id = req.request.img_id;
+                    struct image *blur_img = blurImage(imageArray[current_idx].img);
+					imageArray[current_idx].img = blur_img;
+                    resp.img_id = current_idx;
+			
                 } else {
-                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
                     new_img = blurImage(new_img);
-                    imageArray[image_id_counter].img = new_img;
+                    imageArray[current_idx].img = new_img;
 					resp.img_id = image_id_counter; // Send new image ID back
                 }
                 break;
 			case IMG_SHARPEN:
 				// sync_printf("in IMG_SHARPEN\n");
 				if(req.request.overwrite == 1) {
-                    new_img = sharpenImage(imageArray[image_id_counter].img);
-					imageArray[image_id_counter].img = new_img;
-                    resp.img_id = req.request.img_id;
+                    struct image *sharpen_img = sharpenImage(imageArray[current_idx].img);
+					imageArray[current_idx].img = sharpen_img;
+                    resp.img_id = current_idx;
                 } else {
-                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
                     sharpenImage(new_img);
                     // Store the new image and ID
-                    imageArray[image_id_counter].img = new_img;
+                    imageArray[current_idx].img = new_img;
 					resp.img_id = image_id_counter; // Send new image ID back
                 }
 				break;
 			case IMG_VERTEDGES:
 				// sync_printf("in IMG_VERTEDGES\n");
 				if(req.request.overwrite == 1) {
-                    new_img = detectVerticalEdges(imageArray[image_id_counter].img);
-					imageArray[image_id_counter].img = new_img;
-                    resp.img_id = req.request.img_id;
+                    struct image *vert_img = detectVerticalEdges(imageArray[current_idx].img);
+					imageArray[current_idx].img = vert_img;
+                    resp.img_id = current_idx;
                 } else {
-                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
                     detectVerticalEdges(new_img);
-                    // Store the new image and ID
-                    imageArray[image_id_counter].img = new_img;
+                    imageArray[current_idx].img = new_img;
 					resp.img_id = image_id_counter; // Send new image ID back
                 }
 				break;
 			case IMG_HORIZEDGES:
 				// sync_printf("in IMG_HORIZEDGES\n");
 				if(req.request.overwrite == 1) {
-                    new_img = detectHorizontalEdges(imageArray[image_id_counter].img);
-					imageArray[image_id_counter].img = new_img;
-                    resp.img_id = req.request.img_id;
+                    struct image *hor_img = detectHorizontalEdges(imageArray[current_idx].img);
+					imageArray[current_idx].img = hor_img;
+                    resp.img_id = current_idx;
                 } else {
-                    struct image *new_img = cloneImage(imageArray[image_id_counter].img,err); // Create a copy for modification
+                    struct image *new_img = cloneImage(imageArray[current_idx].img,err); // Create a copy for modification
                     detectHorizontalEdges(new_img);
-                    imageArray[image_id_counter].img = new_img;
+                    imageArray[current_idx].img = new_img;
 					resp.img_id = image_id_counter; // Send new image ID back
                 }
 				break;
 			case IMG_RETRIEVE:
 				// sync_printf("in IMG_RETRIEVE\n");
 				resp.img_id = req.request.img_id;
-				generate_image_id();
-				imageArray[image_id_counter].img = imageArray[image_id_counter-1].img;
-				imageArray[image_id_counter].id = image_id_counter;
 				break;
 			default:
 				resp.ack = RESP_REJECTED;
 				break;
-				
 			}
 
 		
@@ -346,8 +335,8 @@ int worker_main (void * arg)
 		// sync_printf("sent response\n");
 
 		if (req.request.img_op == IMG_RETRIEVE) {
-			printf("INFO: Sending image %ld\n", req.request.img_id);
-			sendImage(imageArray[image_id_counter].img , params->conn_socket); 
+			// printf("INFO: Sending image %ld\n", req.request.img_id);
+			sendImage(imageArray[current_idx].img , params->conn_socket); 
 		}
 
 		/* IMPLEMENT ME! Print out the post-processing status
@@ -359,7 +348,7 @@ int worker_main (void * arg)
 			__opcode_strings[req.request.img_op],
 			req.request.overwrite,
 			req.request.img_id,
-			image_id_counter,
+			current_idx,
 			TSPEC_TO_DOUBLE(req.receipt_timestamp),
 			TSPEC_TO_DOUBLE(req.start_timestamp),
 			TSPEC_TO_DOUBLE(req.completion_timestamp)
@@ -560,51 +549,38 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 				struct response resp;
 
 				if (img != NULL) {
-					generate_image_id();  // Assign an ID to the image
+					 // Assign an ID to the image
+					imageArray[image_id_counter].img = img;   // Store the image in the array
+					imageArray[image_id_counter].id = image_id_counter;  // Store the id in the array
 
-					if (image_id_counter < MAX_IMAGES) {
-						imageArray[image_id_counter].img = img;   // Store the image in the array
-						imageArray[image_id_counter].id = image_id_counter;  // Store the id in the array
-
-						// Set response data
-						resp.req_id = req->request.req_id;
-						resp.img_id = image_id_counter;
-						resp.ack = RESP_COMPLETED;  // Assuming RESP_ACCEPTED is defined as 0
-
-						clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
-
-						sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
-                        0,
-                        req->request.req_id, 
-                        TSPEC_TO_DOUBLE(req->request.req_timestamp),
-                        __opcode_strings[req->request.img_op],
-                        req->request.overwrite,
-                        req->request.img_id,
-                        image_id_counter,
-                        TSPEC_TO_DOUBLE(req->receipt_timestamp),
-                        TSPEC_TO_DOUBLE(req->start_timestamp),
-                        TSPEC_TO_DOUBLE(req->completion_timestamp)
-                        );
-                    	dump_queue_status(the_queue);
-
-					} else {
-						// No space left in the array to store new image
-						deleteImage(img);  // Assuming this function frees the image
-						resp.req_id = req->request.req_id;
-						resp.img_id = 0;  // Or some invalid ID to indicate failure
-						resp.ack = RESP_REJECTED;  // Assuming RESP_REJECTED is defined as 1
-					}
-				} else {
 					resp.req_id = req->request.req_id;
-					resp.img_id = 0;  // Or some invalid ID to indicate failure
-					resp.ack = RESP_REJECTED;  // Assuming RESP_REJECTED is defined as 1
-				}
+					resp.img_id = image_id_counter;
+					resp.ack = RESP_COMPLETED; 
 
-				send(conn_socket, &resp, sizeof(struct response), 0);
+					clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
+					send(conn_socket, &resp, sizeof(struct response), 0);
+
+					sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+					1,
+					req->request.req_id, 
+					TSPEC_TO_DOUBLE(req->request.req_timestamp),
+					__opcode_strings[req->request.img_op],
+					req->request.overwrite,
+					req->request.img_id,
+					image_id_counter,
+					TSPEC_TO_DOUBLE(req->receipt_timestamp),
+					TSPEC_TO_DOUBLE(req->start_timestamp),
+					TSPEC_TO_DOUBLE(req->completion_timestamp)
+					);
+					dump_queue_status(the_queue);
+					} 
+
+				image_id_counter++; 
 				// sync_printf("sent response for img register\n");
 				continue;  // Skip the rest of the loop and wait for next request
 			}					
 
+			
 			res = add_to_queue(*req, the_queue);
             // sync_printf("added to queue\n");
 
