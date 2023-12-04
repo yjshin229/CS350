@@ -34,7 +34,7 @@
 ###############################################################################
 
 
-TARGETS = server_img
+TARGETS = server_mimg
 LIBS = timelib imglib md5sum
 LDFLAGS = -lm -lpthread -O2
 BUILDDIR = build
