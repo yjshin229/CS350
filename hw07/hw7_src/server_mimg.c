@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #include <sched.h>
 #include <signal.h>
+#include <assert.h>
 
 /* Needed for wait(...) */
 #include <sys/types.h>
@@ -79,6 +80,16 @@ sem_t * printf_mutex;
 sem_t * queue_mutex;
 sem_t * queue_notify;
 /* END - Variables needed to protect the shared queue. DO NOT TOUCH */
+
+struct image ** images = NULL;
+uint64_t image_counter = 0;
+
+sem_t image_array_mutex;
+sem_t * img_sem = NULL;
+struct img_req_array *pending_op_seq;
+sem_t * pending_op_mutex;
+
+sem_t conn_socket_mutex;
 
 struct request_meta {
 	struct request request;
@@ -119,88 +130,13 @@ enum worker_command {
 	WORKERS_STOP
 };
 
-struct ImageInfo {
-	struct image* img; 
-	uint32_t id;
+// Define a struct to hold the sequence of request IDs for each image
+struct img_req_array {
+    uint64_t *request_ids; 
+    size_t size;           
+    size_t capacity; 
 };
 
-struct ImageArray {
-    struct ImageInfo* images;
-    size_t capacity;
-    size_t size;
-};
-
-#define MAX_IMAGES 100
-// struct ImageInfo imageArray[MAX_IMAGES];
-struct ImageArray imageArray;
-
-uint64_t image_id_counter = 0;
-
-// Function to initialize the dynamic array
-void initImageArray(struct ImageArray* array) {
-    array->images = (struct ImageInfo*)malloc(MAX_IMAGES * sizeof(struct ImageInfo));
-    if (!array->images) {
-        // Handle allocation failure
-        exit(EXIT_FAILURE);
-    }
-    array->capacity = MAX_IMAGES;
-    array->size = 0;
-}
-
-void addImageInfo(struct ImageArray* array, uint32_t id, struct image* img) {
-    // Check if we need to resize the array
-    if (array->size >= array->capacity) {
-        // Resize array if necessary
-        size_t new_capacity = array->capacity * 2;
-        struct ImageInfo* new_images = (struct ImageInfo*)realloc(array->images, new_capacity * sizeof(struct ImageInfo));
-        if (!new_images) {
-            // Handle allocation failure
-            exit(EXIT_FAILURE);
-        }
-        array->images = new_images;
-        array->capacity = new_capacity;
-    }
-
-    // Add the new image information
-    array->images[array->size].img = img;
-    array->images[array->size].id = id;
-    array->size++;
-}
-
-
-// Function to free the dynamic array
-void freeImageArray(struct ImageArray* array) {
-    for (size_t i = 0; i < array->size; ++i) {
-        // Assuming deleteImage frees the image memory
-        deleteImage(array->images[i].img);
-    }
-    free(array->images);
-    array->images = NULL;
-    array->capacity = 0;
-    array->size = 0;
-}
-
-struct image* getImageById(struct ImageArray* array, uint32_t id) {
-    for (size_t i = 0; i < array->size; i++) {
-        if (array->images[i].id == id) {
-            return array->images[i].img;
-        }
-    }
-    return NULL; // Image not found
-}
-
-void replaceImage(struct ImageArray* array, uint32_t idx, struct image* new_img) {
-    if (idx < array->size) {
-        // Assuming deleteImage frees the image memory
-        deleteImage(array->images[idx].img); // Free the old image
-
-        // Replace with the new image
-        array->images[idx].img = new_img;
-        array->images[idx].id = idx; // if you need to update the ID to match the index
-    } else {
-        // Handle the error: index out of bounds
-    }
-}
 
 void queue_init(struct queue * the_queue, size_t queue_size, enum queue_policy policy)
 {
@@ -232,6 +168,17 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 		the_queue->requests[the_queue->wr_pos] = to_add;
 		the_queue->wr_pos = (the_queue->wr_pos + 1) % the_queue->max_size;
 		the_queue->available--;
+
+		sem_wait(pending_op_mutex);
+		struct img_req_array *img_arr = &pending_op_seq[to_add.request.img_id];
+		if (img_arr->size == img_arr->capacity) {
+			// Increase capacity if needed
+			img_arr->capacity = (img_arr->capacity == 0) ? 1 : img_arr->capacity * 2;
+			img_arr->request_ids = realloc(img_arr->request_ids, img_arr->capacity * sizeof(uint64_t));
+		}
+		img_arr->request_ids[img_arr->size++] = to_add.request.req_id;
+		sem_post(pending_op_mutex);
+
 		/* QUEUE SIGNALING FOR CONSUMER --- DO NOT TOUCH */
 		sem_post(queue_notify);
 	}
@@ -272,121 +219,173 @@ void dump_queue_status(struct queue * the_queue)
 
 	/* WRITE YOUR CODE HERE! */
 	/* MAKE SURE NOT TO RETURN WITHOUT GOING THROUGH THE OUTRO CODE! */
-	sync_printf("Q:[");
+	sem_wait(printf_mutex);
+	printf("Q:[");
 
 	for (i = the_queue->rd_pos, j = 0; j < the_queue->max_size - the_queue->available;
 	     i = (i + 1) % the_queue->max_size, ++j)
 	{
-		sync_printf("R%ld%s", the_queue->requests[i].request.req_id,
+		printf("R%ld%s", the_queue->requests[i].request.req_id,
 		       ((j+1 != the_queue->max_size - the_queue->available)?",":""));
 	}
 
-	sync_printf("]\n");
-
+	printf("]\n");
+	sem_post(printf_mutex);
 	/* QUEUE PROTECTION OUTRO START --- DO NOT TOUCH */
 	sem_post(queue_mutex);
 	/* QUEUE PROTECTION OUTRO END --- DO NOT TOUCH */
 }
 
-/* Main logic of the worker thread */
-int worker_main (void * arg)
+void register_new_image(int conn_socket, struct request * req)
 {
-	struct timespec now;
-	struct worker_params * params = (struct worker_params *)arg;
+    sem_wait(&image_array_mutex);
 
-	/* Print the first alive message. */
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+    image_counter++;
 
-	/* Okay, now execute the main logic. */
-	while (!params->worker_done) {
-		struct request_meta req;
-		struct response resp;
-		if(params->the_queue->available ==  params->the_queue->max_size){
-			continue;
+    images = realloc(images, image_counter * sizeof(struct image *));
+    img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
+
+	sem_wait(pending_op_mutex);
+
+	pending_op_seq = realloc(pending_op_seq, image_counter * sizeof(struct img_req_array));
+	pending_op_seq[image_counter - 1].request_ids = NULL;
+	pending_op_seq[image_counter - 1].size = 0;
+	pending_op_seq[image_counter - 1].capacity = 0;
+
+	sem_post(pending_op_mutex);
+
+    struct image * new_img = recvImage(conn_socket);
+
+    images[image_counter - 1] = new_img;
+
+    sem_init(&img_sem[image_counter - 1], 0, 1);
+    sem_post(&image_array_mutex);
+
+    struct response resp;
+    resp.req_id = req->req_id;
+    resp.img_id = image_counter - 1;
+    resp.ack = RESP_COMPLETED;
+
+    sem_wait(&conn_socket_mutex);
+	send(conn_socket, &resp, sizeof(struct response), 0);
+	sem_post(&conn_socket_mutex);
+}
+
+
+/* Main logic of the worker thread */
+int worker_main (void * arg) {
+    struct timespec now;
+    struct worker_params * params = (struct worker_params *)arg;
+
+    /* Print the first alive message. */
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+
+    while (!params->worker_done) {
+        struct request_meta req = get_from_queue(params->the_queue);
+
+		/* Logging that the thread has dequeued a request */
+        sync_printf("T%d has dequeued REQ R%ld\n", params->worker_id, req.request.req_id);
+
+        struct response resp;
+		uint64_t img_id = req.request.img_id;
+
+        /* Detect wakeup after termination asserted */
+        if (params->worker_done)
+            break;
+
+		sem_wait(&img_sem[img_id]); // Lock the specific image
+
+		struct img_req_array *img_arr = &pending_op_seq[img_id];
+
+		while (img_arr->size > 0 && img_arr->request_ids[0] != req.request.req_id) {
+			sem_post(&img_sem[img_id]); // Release lock to allow other threads to process
+			// usleep(5000); // Sleep for 5 milliseconds to prevent busy waiting
+			sem_wait(&img_sem[img_id]); 
 		}
-		req = get_from_queue(params->the_queue);
-		uint8_t err;
-		uint64_t current_idx = req.request.img_id;
-		struct image *new_img;
 
-		/* Detect wakeup after termination asserted */
-		if (params->worker_done && params->the_queue->available ==  params->the_queue->max_size)
-			break;
+		sem_wait(pending_op_mutex);
+		memmove(img_arr->request_ids, img_arr->request_ids + 1, (img_arr->size - 1) * sizeof(uint64_t));
+		img_arr->size--;
+		sem_post(pending_op_mutex);
 
 		clock_gettime(CLOCK_MONOTONIC, &req.start_timestamp);
 
-		/* IMPLEMENT ME! Take the necessary steps to process
-		 * the client's request for image processing. */
-		 switch(req.request.img_op) {
-            case IMG_ROT90CLKW:
-				new_img = rotate90Clockwise(getImageById(&imageArray, current_idx),err);
-				replaceImage(&imageArray, current_idx, new_img);
-				resp.img_id = current_idx;
-                break;
-            case IMG_BLUR:
-				new_img = blurImage(getImageById(&imageArray, current_idx));
-				replaceImage(&imageArray, current_idx, new_img);
-				resp.img_id = current_idx;
-                break;
+		struct image * img = NULL;
+		img = images[img_id];
+		assert(img != NULL);
+
+		/* Image processing operations */
+		switch (req.request.img_op) {
+			case IMG_ROT90CLKW:
+				img = rotate90Clockwise(img, NULL);
+				break;
+			case IMG_BLUR:
+				img = blurImage(img);
+				break;
 			case IMG_SHARPEN:
-				new_img = sharpenImage(getImageById(&imageArray, current_idx));
-				replaceImage(&imageArray, current_idx, new_img);
-				resp.img_id = current_idx;
+				img = sharpenImage(img);
 				break;
 			case IMG_VERTEDGES:
-				new_img = detectVerticalEdges(getImageById(&imageArray, current_idx));
-				replaceImage(&imageArray, current_idx, new_img);
-				resp.img_id = current_idx;
+				img = detectVerticalEdges(img);
 				break;
 			case IMG_HORIZEDGES:
-				new_img = detectHorizontalEdges(getImageById(&imageArray, current_idx));
-				replaceImage(&imageArray, current_idx, new_img);
-				resp.img_id = current_idx;
+				img = detectHorizontalEdges(img);
 				break;
-			case IMG_RETRIEVE:
-				resp.img_id = req.request.img_id;
-				break;
-			default:
-				resp.ack = RESP_REJECTED;
-				break;
-			}
-
-		
-		clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
-
-		/* Now provide a response! */
-		resp.req_id = req.request.req_id;
-		resp.ack = RESP_COMPLETED;
-
-		/* IMPLEMENT ME! Set the img_id field for the response
-		 * here, if necessary. */
-		send(params->conn_socket, &resp, sizeof(struct response), 0);
-
-		if (req.request.img_op == IMG_RETRIEVE) {
-			sendImage(getImageById(&imageArray, current_idx), params->conn_socket); 
 		}
-		
-		/* IMPLEMENT ME! Print out the post-processing status
-		 * report. */
-		sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
-			0,
-			req.request.req_id, 
-			TSPEC_TO_DOUBLE(req.request.req_timestamp),
-			__opcode_strings[req.request.img_op],
-			req.request.overwrite,
-			req.request.img_id,
-			current_idx,
-			TSPEC_TO_DOUBLE(req.receipt_timestamp),
-			TSPEC_TO_DOUBLE(req.start_timestamp),
-			TSPEC_TO_DOUBLE(req.completion_timestamp)
-		);
-		dump_queue_status(params->the_queue);
-	
+
+		if (req.request.img_op != IMG_RETRIEVE) {
+			sem_wait(&image_array_mutex); // Lock the image array
+			if (req.request.overwrite) {
+				// deleteImage(images[img_id]);  // Free the old image
+				images[img_id] = img;         // Update with new image
+			} else {
+				/* Generate new ID and Increase the count of registered images */
+				img_id = image_counter++;
+				images = realloc(images, image_counter * sizeof(struct image *));
+				images[img_id] = img;
+			}
+			sem_post(&image_array_mutex); // Unlock the image array
+		}
+		sem_post(&img_sem[img_id]); // Unlock the specific image
+
+        clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
+
+        /* Response to the client */
+        resp.req_id = req.request.req_id;
+        resp.ack = RESP_COMPLETED;
+        resp.img_id = img_id;
+
+		sem_wait(&conn_socket_mutex);
+		send(params->conn_socket, &resp, sizeof(struct response), 0);
+		sem_post(&conn_socket_mutex);
+
+        /* Send the actual image payload for IMG_RETRIEVE operation */
+        if (req.request.img_op == IMG_RETRIEVE) {
+			sem_wait(&conn_socket_mutex);
+            uint8_t err = sendImage(img, params->conn_socket);
+            if(err) {
+                ERROR_INFO();
+                perror("Unable to send image payload to client.");
+            }
+			sem_post(&conn_socket_mutex);
+        }
+
+        sync_printf("T%d R%ld:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n",
+                   params->worker_id, req.request.req_id,
+                   TSPEC_TO_DOUBLE(req.request.req_timestamp),
+                   OPCODE_TO_STRING(req.request.img_op),
+                   req.request.overwrite, req.request.img_id, img_id,
+                   TSPEC_TO_DOUBLE(req.receipt_timestamp),
+                   TSPEC_TO_DOUBLE(req.start_timestamp),
+                   TSPEC_TO_DOUBLE(req.completion_timestamp));
+
+        dump_queue_status(params->the_queue);
 	}
 
-	return EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }
+
 
 /* This function will start/stop all the worker threads wrapping
  * around the clone()/waitpid() system calls */
@@ -405,7 +404,7 @@ int control_workers(enum worker_command cmd, size_t worker_count,
 		/* Allocate all stacks and parameters */
 		worker_stacks = (char **)malloc(worker_count * sizeof(char *));
 		worker_params = (struct worker_params **)
-			malloc(worker_count * sizeof(struct worker_params *));
+		malloc(worker_count * sizeof(struct worker_params *));
 		worker_ids = (int *)malloc(worker_count * sizeof(int));
 
 		if (!worker_stacks || !worker_params) {
@@ -479,7 +478,7 @@ int control_workers(enum worker_command cmd, size_t worker_count,
 			}
 
 			sem_post(queue_notify);
-			waitpid(-1, NULL, 0);
+			waitpid(-1, NULL, __WCLONE);
 			sync_printf("INFO: Worker thread exited.\n");
 		}
 
@@ -542,12 +541,11 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 
 	/* We are ready to proceed with the rest of the request
 	 * handling logic. */
+    req = (struct request_meta *)malloc(sizeof(struct request_meta));
 
-	req = (struct request_meta *)malloc(sizeof(struct request_meta));
-
-	do {
-		in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
-		clock_gettime(CLOCK_MONOTONIC, &req->receipt_timestamp);
+    do {
+        in_bytes = recv(conn_socket, &req->request, sizeof(struct request), 0);
+        clock_gettime(CLOCK_MONOTONIC, &req->receipt_timestamp);
 
 		/* Don't just return if in_bytes is 0 or -1. Instead
 		 * skip the response and break out of the loop in an
@@ -555,48 +553,28 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		 * and resp varaibles, and shutdown the socket. */
 		if (in_bytes > 0) {
 
-			/* IMPLEMENT ME! Check right away if the
-			 * request has img_op set to IMG_REGISTER. If
-			 * so, handle the operation right away,
-			 * reading in the full image payload, replying
-			 * to the server, and bypassing the queue. */
-			if (req->request.img_op == IMG_REGISTER) {
+			/* Handle image registration right away! */
+			if(req->request.img_op == IMG_REGISTER) {
 				clock_gettime(CLOCK_MONOTONIC, &req->start_timestamp);
-				struct image *img = recvImage(conn_socket);
-				struct response resp;
 
-				if (img != NULL) {
+				register_new_image(conn_socket, &req->request);
 
-					addImageInfo(&imageArray, image_id_counter, img);
+				clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
 
-					resp.req_id = req->request.req_id;
-					resp.img_id = image_id_counter;
-					resp.ack = RESP_COMPLETED; 
+				sync_printf("T%ld R%ld:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n",
+				       conn_params.workers, req->request.req_id,
+				       TSPEC_TO_DOUBLE(req->request.req_timestamp),
+				       OPCODE_TO_STRING(req->request.img_op),
+				       req->request.overwrite, req->request.img_id,
+				       image_counter - 1,
+				       TSPEC_TO_DOUBLE(req->receipt_timestamp),
+				       TSPEC_TO_DOUBLE(req->start_timestamp),
+				       TSPEC_TO_DOUBLE(req->completion_timestamp));
 
-					clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
-					send(conn_socket, &resp, sizeof(struct response), 0);
+				dump_queue_status(the_queue);
+				continue;
+			}
 
-					sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
-					1,
-					req->request.req_id, 
-					TSPEC_TO_DOUBLE(req->request.req_timestamp),
-					__opcode_strings[req->request.img_op],
-					req->request.overwrite,
-					req->request.img_id,
-					image_id_counter,
-					TSPEC_TO_DOUBLE(req->receipt_timestamp),
-					TSPEC_TO_DOUBLE(req->start_timestamp),
-					TSPEC_TO_DOUBLE(req->completion_timestamp)
-					);
-
-					dump_queue_status(the_queue);
-					} 
-
-				image_id_counter++; 
-				continue;  // Skip the rest of the loop and wait for next request
-			}					
-
-			
 			res = add_to_queue(*req, the_queue);
 
 			/* The queue is full if the return value is 1 */
@@ -605,27 +583,28 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 				/* Now provide a response! */
 				resp.req_id = req->request.req_id;
 				resp.ack = RESP_REJECTED;
+				sem_wait(&conn_socket_mutex);
 				send(conn_socket, &resp, sizeof(struct response), 0);
+				sem_post(&conn_socket_mutex);
 
 				sync_printf("X%ld:%lf,%lf,%lf\n", req->request.req_id,
-					TSPEC_TO_DOUBLE(req->request.req_timestamp),
-					TSPEC_TO_DOUBLE(req->request.req_length),
-					TSPEC_TO_DOUBLE(req->receipt_timestamp)
+				       TSPEC_TO_DOUBLE(req->request.req_timestamp),
+				       TSPEC_TO_DOUBLE(req->request.req_length),
+				       TSPEC_TO_DOUBLE(req->receipt_timestamp)
 					);
+
 			}
-			
-			
 		}
 	} while (in_bytes > 0);
 
-
 	/* Stop all the worker threads. */
-	control_workers(WORKERS_STOP, conn_params.workers, NULL);
-
-	free(req);
-	shutdown(conn_socket, SHUT_RDWR);
-	close(conn_socket);
-	printf("INFO: Client disconnected.\n");
+    // control_workers(WORKERS_STOP, conn_params.workers, NULL);
+    free(req);
+	free(the_queue->requests);
+	free(the_queue);
+    shutdown(conn_socket, SHUT_RDWR);
+    close(conn_socket);
+    sync_printf("INFO: Client disconnected.\n");
 }
 
 
@@ -633,148 +612,169 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
  * server. The server must accept in input a command line parameter
  * with the <port number> to bind the server to. */
 int main (int argc, char ** argv) {
-	int sockfd, retval, accepted, optval, opt;
-	in_port_t socket_port;
-	struct sockaddr_in addr, client;
-	struct in_addr any_address;
-	socklen_t client_len;
-	struct connection_params conn_params;
+    int sockfd, retval, accepted, optval, opt;
+    in_port_t socket_port;
+    struct sockaddr_in addr, client;
+    struct in_addr any_address;
+    socklen_t client_len;
+    struct connection_params conn_params;
+    conn_params.queue_size = 0;
+    conn_params.queue_policy = QUEUE_FIFO;
+    conn_params.workers = 1;
 
-	conn_params.queue_size = 0;
-	conn_params.queue_policy = QUEUE_FIFO;
-	conn_params.workers = 1;
+    /* Parse all the command line arguments */
+    while((opt = getopt(argc, argv, "q:w:p:")) != -1) {
+        switch (opt) {
+        case 'q':
+            conn_params.queue_size = strtol(optarg, NULL, 10);
+            printf("INFO: setting queue size = %ld\n", conn_params.queue_size);
+            break;
+        case 'w':
+            conn_params.workers = strtol(optarg, NULL, 10);
+            printf("INFO: setting worker count = %ld\n", conn_params.workers);
+            break;
+        case 'p':
+            if (!strcmp(optarg, "FIFO")) {
+                conn_params.queue_policy = QUEUE_FIFO;
+            } else {
+                ERROR_INFO();
+                fprintf(stderr, "Invalid queue policy.\n" USAGE_STRING, argv[0]);
+                return EXIT_FAILURE;
+            }
+            printf("INFO: setting queue policy = %s\n", optarg);
+            break;
+        default: /* '?' */
+            fprintf(stderr, USAGE_STRING, argv[0]);
+        }
+    }
 
-	/* Parse all the command line arguments */
-	while((opt = getopt(argc, argv, "q:w:p:")) != -1) {
-		switch (opt) {
-		case 'q':
-			conn_params.queue_size = strtol(optarg, NULL, 10);
-			printf("INFO: setting queue size = %ld\n", conn_params.queue_size);
-			break;
-		case 'w':
-			conn_params.workers = strtol(optarg, NULL, 10);
-			printf("INFO: setting worker count = %ld\n", conn_params.workers);
-			if (conn_params.workers != 1) {
-				ERROR_INFO();
-				fprintf(stderr, "Only 1 worker is supported in this implementation!\n" USAGE_STRING, argv[0]);
-				return EXIT_FAILURE;
+    if (!conn_params.queue_size) {
+        ERROR_INFO();
+        fprintf(stderr, USAGE_STRING, argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    if (optind < argc) {
+        socket_port = strtol(argv[optind], NULL, 10);
+        printf("INFO: setting server port as: %d\n", socket_port);
+    } else {
+        ERROR_INFO();
+        fprintf(stderr, USAGE_STRING, argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    /* Socket creation and binding */
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        ERROR_INFO();
+        perror("Unable to create socket");
+        return EXIT_FAILURE;
+    }
+
+    optval = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (void *)&optval, sizeof(optval));
+    any_address.s_addr = htonl(INADDR_ANY);
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(socket_port);
+    addr.sin_addr = any_address;
+
+    retval = bind(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+    if (retval < 0) {
+        ERROR_INFO();
+        perror("Unable to bind socket");
+        return EXIT_FAILURE;
+    }
+
+    retval = listen(sockfd, BACKLOG_COUNT);
+    if (retval < 0) {
+        ERROR_INFO();
+        perror("Unable to listen on socket");
+        return EXIT_FAILURE;
+    }
+
+    printf("INFO: Waiting for incoming connection...\n");
+    client_len = sizeof(struct sockaddr_in);
+    accepted = accept(sockfd, (struct sockaddr *)&client, &client_len);
+    if (accepted == -1) {
+        ERROR_INFO();
+        perror("Unable to accept connections");
+        return EXIT_FAILURE;
+    }
+
+    /* Initialize semaphores */
+    printf_mutex = (sem_t *)malloc(sizeof(sem_t));
+    retval = sem_init(printf_mutex, 0, 1);
+    if (retval < 0) {
+        ERROR_INFO();
+        perror("Unable to initialize printf mutex");
+        return EXIT_FAILURE;
+    }
+
+    queue_mutex = (sem_t *)malloc(sizeof(sem_t));
+    queue_notify = (sem_t *)malloc(sizeof(sem_t));
+    retval = sem_init(queue_mutex, 0, 1);
+    if (retval < 0) {
+        ERROR_INFO();
+        perror("Unable to initialize queue mutex");
+        return EXIT_FAILURE;
+    }
+    retval = sem_init(queue_notify, 0, 0);
+    if (retval < 0) {
+        ERROR_INFO();
+        perror("Unable to initialize queue notify");
+        return EXIT_FAILURE;
+    }
+	// Initialize connection socket semaphore
+	retval = sem_init(&conn_socket_mutex, 0, 1);
+	if (retval < 0) {
+		ERROR_INFO();
+		perror("Unable to initialize connection socket mutex");
+		return EXIT_FAILURE;
+	}
+	// Initialize the semaphore for pending operations count
+    pending_op_mutex = malloc(sizeof(sem_t));
+    if (sem_init(pending_op_mutex, 0, 1) != 0) {
+        perror("Failed to initialize pending operations mutex");
+        return EXIT_FAILURE;
+    }
+
+    /* Initialize image array semaphore */
+    sem_init(&image_array_mutex, 0, 1);
+    img_sem = NULL; // Initialized to NULL, will be allocated dynamically
+
+    /* Handle connection */
+    handle_connection(accepted, conn_params);
+
+    /* Cleanup */
+    if (images) {
+        for (size_t i = 0; i < image_counter; i++) {
+            if (images[i]) {
+                deleteImage(images[i]);
+            }
+            sem_destroy(&img_sem[i]);
+        }
+        free(images);
+        free(img_sem);
+    }
+
+	if (pending_op_seq) {
+        for (size_t i = 0; i < image_counter; i++) {
+			if (pending_op_seq[i].request_ids) {
+            	free(pending_op_seq[i].request_ids);
 			}
-			break;
-		case 'p':
-			if (!strcmp(optarg, "FIFO")) {
-				conn_params.queue_policy = QUEUE_FIFO;
-			} else {
-				ERROR_INFO();
-				fprintf(stderr, "Invalid queue policy.\n" USAGE_STRING, argv[0]);
-				return EXIT_FAILURE;
-			}
-			printf("INFO: setting queue policy = %s\n", optarg);
-			break;
-		default: /* '?' */
-			fprintf(stderr, USAGE_STRING, argv[0]);
-		}
-	}
+        }
+        free(pending_op_seq);
+    }
 
-	if (!conn_params.queue_size) {
-		ERROR_INFO();
-		fprintf(stderr, USAGE_STRING, argv[0]);
-		return EXIT_FAILURE;
-	}
-
-	if (optind < argc) {
-		socket_port = strtol(argv[optind], NULL, 10);
-		printf("INFO: setting server port as: %d\n", socket_port);
-	} else {
-		ERROR_INFO();
-		fprintf(stderr, USAGE_STRING, argv[0]);
-		return EXIT_FAILURE;
-	}
-
-	/* Now onward to create the right type of socket */
-	sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
-	if (sockfd < 0) {
-		ERROR_INFO();
-		perror("Unable to create socket");
-		return EXIT_FAILURE;
-	}
-
-	/* Before moving forward, set socket to reuse address */
-	optval = 1;
-	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (void *)&optval, sizeof(optval));
-
-	/* Convert INADDR_ANY into network byte order */
-	any_address.s_addr = htonl(INADDR_ANY);
-
-	/* Time to bind the socket to the right port  */
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(socket_port);
-	addr.sin_addr = any_address;
-
-	/* Attempt to bind the socket with the given parameters */
-	retval = bind(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-
-	if (retval < 0) {
-		ERROR_INFO();
-		perror("Unable to bind socket");
-		return EXIT_FAILURE;
-	}
-
-	/* Let us now proceed to set the server to listen on the selected port */
-	retval = listen(sockfd, BACKLOG_COUNT);
-
-	if (retval < 0) {
-		ERROR_INFO();
-		perror("Unable to listen on socket");
-		return EXIT_FAILURE;
-	}
-
-	/* Ready to accept connections! */
-	printf("INFO: Waiting for incoming connection...\n");
-	client_len = sizeof(struct sockaddr_in);
-	accepted = accept(sockfd, (struct sockaddr *)&client, &client_len);
-
-	if (accepted == -1) {
-		ERROR_INFO();
-		perror("Unable to accept connections");
-		return EXIT_FAILURE;
-	}
-
-	initImageArray(&imageArray);
-
-	/* Initilize threaded printf mutex */
-	printf_mutex = (sem_t *)malloc(sizeof(sem_t));
-	retval = sem_init(printf_mutex, 0, 1);
-	if (retval < 0) {
-		ERROR_INFO();
-		perror("Unable to initialize printf mutex");
-		return EXIT_FAILURE;
-	}
-
-	/* Initialize queue protection variables. DO NOT TOUCH. */
-	queue_mutex = (sem_t *)malloc(sizeof(sem_t));
-	queue_notify = (sem_t *)malloc(sizeof(sem_t));
-	retval = sem_init(queue_mutex, 0, 1);
-	if (retval < 0) {
-		ERROR_INFO();
-		perror("Unable to initialize queue mutex");
-		return EXIT_FAILURE;
-	}
-	retval = sem_init(queue_notify, 0, 0);
-	if (retval < 0) {
-		ERROR_INFO();
-		perror("Unable to initialize queue notify");
-		return EXIT_FAILURE;
-	}
-	/* DONE - Initialize queue protection variables */
-
-	/* Ready to handle the new connection with the client. */
-	handle_connection(accepted, conn_params);
+    sem_destroy(printf_mutex);
+	sem_destroy(&image_array_mutex);
+	sem_destroy(&conn_socket_mutex);
+	sem_destroy(pending_op_mutex);
 
 	free(queue_mutex);
-	free(queue_notify);
-	freeImageArray(&imageArray);
-
-	close(sockfd);
-	return EXIT_SUCCESS;
+    free(queue_notify);
+    free(printf_mutex);
+	free(pending_op_mutex);
+    close(sockfd);
 }
