@@ -102,7 +102,6 @@ enum queue_policy {
 	QUEUE_FIFO,
 	QUEUE_SJN
 };
-
 struct queue {
 	size_t wr_pos;
 	size_t rd_pos;
@@ -130,13 +129,51 @@ enum worker_command {
 	WORKERS_STOP
 };
 
-// Define a struct to hold the sequence of request IDs for each image
 struct img_req_array {
     uint64_t *request_ids; 
     size_t size;           
     size_t capacity; 
 };
 
+void init_pending_op_array(){
+    image_counter++;
+
+    images = realloc(images, image_counter * sizeof(struct image *));
+    img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
+
+	sem_wait(pending_op_mutex);
+
+	pending_op_seq = realloc(pending_op_seq, image_counter * sizeof(struct img_req_array));
+	pending_op_seq[image_counter - 1].request_ids = NULL;
+	pending_op_seq[image_counter - 1].size = 0;
+	pending_op_seq[image_counter - 1].capacity = 0;
+
+	sem_post(pending_op_mutex);
+}
+
+void register_new_image(int conn_socket, struct request * req)
+{
+    sem_wait(&image_array_mutex);
+
+    init_pending_op_array();
+
+    struct image *img = recvImage(conn_socket);
+    struct response resp;
+
+	if (img != NULL){
+    	images[image_counter - 1] = img;
+    	sem_init(&img_sem[image_counter - 1], 0, 1);
+    	sem_post(&image_array_mutex);
+
+		resp.req_id = req->req_id;
+		resp.img_id = image_counter - 1;
+		resp.ack = RESP_COMPLETED;
+
+		sem_wait(&conn_socket_mutex);
+		send(conn_socket, &resp, sizeof(struct response), 0);
+		sem_post(&conn_socket_mutex);
+	}
+}
 
 void queue_init(struct queue * the_queue, size_t queue_size, enum queue_policy policy)
 {
@@ -172,7 +209,6 @@ int add_to_queue(struct request_meta to_add, struct queue * the_queue)
 		sem_wait(pending_op_mutex);
 		struct img_req_array *img_arr = &pending_op_seq[to_add.request.img_id];
 		if (img_arr->size == img_arr->capacity) {
-			// Increase capacity if needed
 			img_arr->capacity = (img_arr->capacity == 0) ? 1 : img_arr->capacity * 2;
 			img_arr->request_ids = realloc(img_arr->request_ids, img_arr->capacity * sizeof(uint64_t));
 		}
@@ -236,42 +272,6 @@ void dump_queue_status(struct queue * the_queue)
 	/* QUEUE PROTECTION OUTRO END --- DO NOT TOUCH */
 }
 
-void register_new_image(int conn_socket, struct request * req)
-{
-    sem_wait(&image_array_mutex);
-
-    image_counter++;
-
-    images = realloc(images, image_counter * sizeof(struct image *));
-    img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
-
-	sem_wait(pending_op_mutex);
-
-	pending_op_seq = realloc(pending_op_seq, image_counter * sizeof(struct img_req_array));
-	pending_op_seq[image_counter - 1].request_ids = NULL;
-	pending_op_seq[image_counter - 1].size = 0;
-	pending_op_seq[image_counter - 1].capacity = 0;
-
-	sem_post(pending_op_mutex);
-
-    struct image * new_img = recvImage(conn_socket);
-
-    images[image_counter - 1] = new_img;
-
-    sem_init(&img_sem[image_counter - 1], 0, 1);
-    sem_post(&image_array_mutex);
-
-    struct response resp;
-    resp.req_id = req->req_id;
-    resp.img_id = image_counter - 1;
-    resp.ack = RESP_COMPLETED;
-
-    sem_wait(&conn_socket_mutex);
-	send(conn_socket, &resp, sizeof(struct response), 0);
-	sem_post(&conn_socket_mutex);
-}
-
-
 /* Main logic of the worker thread */
 int worker_main (void * arg) {
     struct timespec now;
@@ -282,25 +282,23 @@ int worker_main (void * arg) {
     sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
 
     while (!params->worker_done) {
-        struct request_meta req = get_from_queue(params->the_queue);
+		struct request_meta req;
+		struct response resp;
 
-		/* Logging that the thread has dequeued a request */
-        sync_printf("T%d has dequeued REQ R%ld\n", params->worker_id, req.request.req_id);
-
-        struct response resp;
+        req = get_from_queue(params->the_queue);
 		uint64_t img_id = req.request.img_id;
 
-        /* Detect wakeup after termination asserted */
-        if (params->worker_done)
-            break;
+        sync_printf("T%d has dequeued REQ R%ld\n", params->worker_id, req.request.req_id);
+		
+		if (params->worker_done)
+			break;
 
-		sem_wait(&img_sem[img_id]); // Lock the specific image
+		sem_wait(&img_sem[img_id]); 
 
 		struct img_req_array *img_arr = &pending_op_seq[img_id];
 
 		while (img_arr->size > 0 && img_arr->request_ids[0] != req.request.req_id) {
-			sem_post(&img_sem[img_id]); // Release lock to allow other threads to process
-			// usleep(5000); // Sleep for 5 milliseconds to prevent busy waiting
+			sem_post(&img_sem[img_id]); 
 			sem_wait(&img_sem[img_id]); 
 		}
 
@@ -315,7 +313,6 @@ int worker_main (void * arg) {
 		img = images[img_id];
 		assert(img != NULL);
 
-		/* Image processing operations */
 		switch (req.request.img_op) {
 			case IMG_ROT90CLKW:
 				img = rotate90Clockwise(img, NULL);
@@ -335,32 +332,31 @@ int worker_main (void * arg) {
 		}
 
 		if (req.request.img_op != IMG_RETRIEVE) {
-			sem_wait(&image_array_mutex); // Lock the image array
+			sem_wait(&image_array_mutex); 
 			if (req.request.overwrite) {
-				// deleteImage(images[img_id]);  // Free the old image
-				images[img_id] = img;         // Update with new image
+				images[img_id] = img;        
 			} else {
-				/* Generate new ID and Increase the count of registered images */
 				img_id = image_counter++;
 				images = realloc(images, image_counter * sizeof(struct image *));
 				images[img_id] = img;
 			}
-			sem_post(&image_array_mutex); // Unlock the image array
+			sem_post(&image_array_mutex); 
 		}
-		sem_post(&img_sem[img_id]); // Unlock the specific image
+		sem_post(&img_sem[img_id]);
 
         clock_gettime(CLOCK_MONOTONIC, &req.completion_timestamp);
 
-        /* Response to the client */
+		/* Now provide a response! */
         resp.req_id = req.request.req_id;
         resp.ack = RESP_COMPLETED;
         resp.img_id = img_id;
 
+		/* IMPLEMENT ME! Set the img_id field for the response
+		 * here, if necessary. */
 		sem_wait(&conn_socket_mutex);
 		send(params->conn_socket, &resp, sizeof(struct response), 0);
 		sem_post(&conn_socket_mutex);
 
-        /* Send the actual image payload for IMG_RETRIEVE operation */
         if (req.request.img_op == IMG_RETRIEVE) {
 			sem_wait(&conn_socket_mutex);
             uint8_t err = sendImage(img, params->conn_socket);
@@ -371,14 +367,20 @@ int worker_main (void * arg) {
 			sem_post(&conn_socket_mutex);
         }
 
-        sync_printf("T%d R%ld:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n",
-                   params->worker_id, req.request.req_id,
-                   TSPEC_TO_DOUBLE(req.request.req_timestamp),
-                   OPCODE_TO_STRING(req.request.img_op),
-                   req.request.overwrite, req.request.img_id, img_id,
-                   TSPEC_TO_DOUBLE(req.receipt_timestamp),
-                   TSPEC_TO_DOUBLE(req.start_timestamp),
-                   TSPEC_TO_DOUBLE(req.completion_timestamp));
+		/* IMPLEMENT ME! Print out the post-processing status
+		 * report. */
+		sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+			params->worker_id,
+			req.request.req_id, 
+			TSPEC_TO_DOUBLE(req.request.req_timestamp),
+			OPCODE_TO_STRING(req.request.img_op),
+			req.request.overwrite,
+			req.request.img_id,
+			img_id,
+			TSPEC_TO_DOUBLE(req.receipt_timestamp),
+			TSPEC_TO_DOUBLE(req.start_timestamp),
+			TSPEC_TO_DOUBLE(req.completion_timestamp)
+		);
 
         dump_queue_status(params->the_queue);
 	}
@@ -553,26 +555,27 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 		 * and resp varaibles, and shutdown the socket. */
 		if (in_bytes > 0) {
 
-			/* Handle image registration right away! */
 			if(req->request.img_op == IMG_REGISTER) {
+
 				clock_gettime(CLOCK_MONOTONIC, &req->start_timestamp);
-
 				register_new_image(conn_socket, &req->request);
-
 				clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
 
-				sync_printf("T%ld R%ld:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n",
-				       conn_params.workers, req->request.req_id,
-				       TSPEC_TO_DOUBLE(req->request.req_timestamp),
-				       OPCODE_TO_STRING(req->request.img_op),
-				       req->request.overwrite, req->request.img_id,
-				       image_counter - 1,
-				       TSPEC_TO_DOUBLE(req->receipt_timestamp),
-				       TSPEC_TO_DOUBLE(req->start_timestamp),
-				       TSPEC_TO_DOUBLE(req->completion_timestamp));
+				sync_printf("T%ld R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+					conn_params.workers,
+					req->request.req_id, 
+					TSPEC_TO_DOUBLE(req->request.req_timestamp),
+					OPCODE_TO_STRING(req->request.img_op),
+					req->request.overwrite,
+					req->request.img_id,
+					image_counter - 1,
+					TSPEC_TO_DOUBLE(req->receipt_timestamp),
+					TSPEC_TO_DOUBLE(req->start_timestamp),
+					TSPEC_TO_DOUBLE(req->completion_timestamp)
+					);
 
 				dump_queue_status(the_queue);
-				continue;
+				continue;  // Skip the rest of the loop and wait for next request
 			}
 
 			res = add_to_queue(*req, the_queue);
