@@ -136,10 +136,32 @@ struct img_req_array {
 };
 
 void init_pending_op_array(){
+
+	sem_wait(&image_array_mutex);
     image_counter++;
 
-    images = realloc(images, image_counter * sizeof(struct image *));
-    img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
+	struct image **new_images = realloc(images, image_counter * sizeof(struct image *));
+    if (new_images == NULL) {
+        // Handle realloc failure
+        fprintf(stderr, "Failed to reallocate memory for images array\n");
+        sem_post(&image_array_mutex);
+        exit(EXIT_FAILURE);
+    }
+    images = new_images;
+
+
+    sem_t *new_img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
+    if (new_img_sem == NULL) {
+        // Handle realloc failure
+        fprintf(stderr, "Failed to reallocate memory for semaphore array\n");
+        sem_post(&image_array_mutex);
+        exit(EXIT_FAILURE);
+    }
+    img_sem = new_img_sem;
+	sem_post(&image_array_mutex);
+
+    // images = realloc(images, image_counter * sizeof(struct image *));
+    // img_sem = realloc(img_sem, image_counter * sizeof(sem_t));
 
 	sem_wait(pending_op_mutex);
 
@@ -153,26 +175,40 @@ void init_pending_op_array(){
 
 void register_new_image(int conn_socket, struct request * req)
 {
-    sem_wait(&image_array_mutex);
 
     init_pending_op_array();
 
     struct image *img = recvImage(conn_socket);
     struct response resp;
 
+    sem_wait(&image_array_mutex);
+
 	if (img != NULL){
     	images[image_counter - 1] = img;
     	sem_init(&img_sem[image_counter - 1], 0, 1);
-    	sem_post(&image_array_mutex);
 
 		resp.req_id = req->req_id;
 		resp.img_id = image_counter - 1;
 		resp.ack = RESP_COMPLETED;
 
+    	sem_post(&image_array_mutex);
+
 		sem_wait(&conn_socket_mutex);
 		send(conn_socket, &resp, sizeof(struct response), 0);
 		sem_post(&conn_socket_mutex);
-	}
+	}else {
+        // Handle image reception failure
+        fprintf(stderr, "Failed to receive image from client\n");
+        resp.req_id = req->req_id;
+        resp.img_id = -1; // Indicate failure
+        resp.ack = RESP_REJECTED;
+
+        sem_post(&image_array_mutex);
+
+        sem_wait(&conn_socket_mutex);
+        send(conn_socket, &resp, sizeof(struct response), 0);
+        sem_post(&conn_socket_mutex);
+    }
 }
 
 void queue_init(struct queue * the_queue, size_t queue_size, enum queue_policy policy)
@@ -279,7 +315,7 @@ int worker_main (void * arg) {
 
     /* Print the first alive message. */
     clock_gettime(CLOCK_MONOTONIC, &now);
-    sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
+    // sync_printf("[#WORKER#] %lf Worker Thread Alive!\n", TSPEC_TO_DOUBLE(now));
 
     while (!params->worker_done) {
 		struct request_meta req;
@@ -288,7 +324,7 @@ int worker_main (void * arg) {
         req = get_from_queue(params->the_queue);
 		uint64_t img_id = req.request.img_id;
 
-        sync_printf("T%d has dequeued REQ R%ld\n", params->worker_id, req.request.req_id);
+        // sync_printf("T%d has dequeued REQ R%ld\n", params->worker_id, req.request.req_id);
 		
 		if (params->worker_done)
 			break;
@@ -369,20 +405,20 @@ int worker_main (void * arg) {
 
 		/* IMPLEMENT ME! Print out the post-processing status
 		 * report. */
-		sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
-			params->worker_id,
-			req.request.req_id, 
-			TSPEC_TO_DOUBLE(req.request.req_timestamp),
-			OPCODE_TO_STRING(req.request.img_op),
-			req.request.overwrite,
-			req.request.img_id,
-			img_id,
-			TSPEC_TO_DOUBLE(req.receipt_timestamp),
-			TSPEC_TO_DOUBLE(req.start_timestamp),
-			TSPEC_TO_DOUBLE(req.completion_timestamp)
-		);
+		// sync_printf("T%d R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+		// 	params->worker_id,
+		// 	req.request.req_id, 
+		// 	TSPEC_TO_DOUBLE(req.request.req_timestamp),
+		// 	OPCODE_TO_STRING(req.request.img_op),
+		// 	req.request.overwrite,
+		// 	req.request.img_id,
+		// 	img_id,
+		// 	TSPEC_TO_DOUBLE(req.receipt_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.start_timestamp),
+		// 	TSPEC_TO_DOUBLE(req.completion_timestamp)
+		// );
 
-        dump_queue_status(params->the_queue);
+        // dump_queue_status(params->the_queue);
 	}
 
     return EXIT_SUCCESS;
@@ -448,8 +484,8 @@ int control_workers(enum worker_command cmd, size_t worker_count,
 				perror("Unable to start thread.");
 				return EXIT_FAILURE;
 			} else {
-				sync_printf("INFO: Worker thread %ld (TID = %d) started!\n",
-				       i, worker_ids[i]);
+				// sync_printf("INFO: Worker thread %ld (TID = %d) started!\n",
+				//        i, worker_ids[i]);
 			}
 		}
 	}
@@ -481,7 +517,7 @@ int control_workers(enum worker_command cmd, size_t worker_count,
 
 			sem_post(queue_notify);
 			waitpid(-1, NULL, __WCLONE);
-			sync_printf("INFO: Worker thread exited.\n");
+			// sync_printf("INFO: Worker thread exited.\n");
 		}
 
 		/* Finally, do a round of deallocations */
@@ -517,11 +553,15 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	struct request_meta * req;
 	struct queue * the_queue;
 	size_t in_bytes;
+	struct timespec start,end;
 
 	/* The connection with the client is alive here. Let's start
 	 * the worker thread. */
 	struct worker_params common_worker_params;
 	int res;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+    sync_printf("%lf ", TSPEC_TO_DOUBLE(start));
 
 	/* Now handle queue allocation and initialization */
 	the_queue = (struct queue *)malloc(sizeof(struct queue));
@@ -561,20 +601,20 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 				register_new_image(conn_socket, &req->request);
 				clock_gettime(CLOCK_MONOTONIC, &req->completion_timestamp);
 
-				sync_printf("T%ld R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
-					conn_params.workers,
-					req->request.req_id, 
-					TSPEC_TO_DOUBLE(req->request.req_timestamp),
-					OPCODE_TO_STRING(req->request.img_op),
-					req->request.overwrite,
-					req->request.img_id,
-					image_counter - 1,
-					TSPEC_TO_DOUBLE(req->receipt_timestamp),
-					TSPEC_TO_DOUBLE(req->start_timestamp),
-					TSPEC_TO_DOUBLE(req->completion_timestamp)
-					);
+				// sync_printf("T%ld R%lu:%lf,%s,%d,%ld,%ld,%lf,%lf,%lf\n", 
+				// 	conn_params.workers,
+				// 	req->request.req_id, 
+				// 	TSPEC_TO_DOUBLE(req->request.req_timestamp),
+				// 	OPCODE_TO_STRING(req->request.img_op),
+				// 	req->request.overwrite,
+				// 	req->request.img_id,
+				// 	image_counter - 1,
+				// 	TSPEC_TO_DOUBLE(req->receipt_timestamp),
+				// 	TSPEC_TO_DOUBLE(req->start_timestamp),
+				// 	TSPEC_TO_DOUBLE(req->completion_timestamp)
+				// 	);
 
-				dump_queue_status(the_queue);
+				// dump_queue_status(the_queue);
 				continue;  // Skip the rest of the loop and wait for next request
 			}
 
@@ -590,11 +630,11 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 				send(conn_socket, &resp, sizeof(struct response), 0);
 				sem_post(&conn_socket_mutex);
 
-				sync_printf("X%ld:%lf,%lf,%lf\n", req->request.req_id,
-				       TSPEC_TO_DOUBLE(req->request.req_timestamp),
-				       TSPEC_TO_DOUBLE(req->request.req_length),
-				       TSPEC_TO_DOUBLE(req->receipt_timestamp)
-					);
+				// sync_printf("X%ld:%lf,%lf,%lf\n", req->request.req_id,
+				//        TSPEC_TO_DOUBLE(req->request.req_timestamp),
+				//        TSPEC_TO_DOUBLE(req->request.req_length),
+				//        TSPEC_TO_DOUBLE(req->receipt_timestamp)
+				// 	);
 
 			}
 		}
@@ -607,7 +647,9 @@ void handle_connection(int conn_socket, struct connection_params conn_params)
 	free(the_queue);
     shutdown(conn_socket, SHUT_RDWR);
     close(conn_socket);
-    sync_printf("INFO: Client disconnected.\n");
+    // sync_printf("INFO: Client disconnected.\n");
+	clock_gettime(CLOCK_MONOTONIC, &end);
+    sync_printf("%lf\n", TSPEC_TO_DOUBLE(end));
 }
 
 
@@ -630,11 +672,11 @@ int main (int argc, char ** argv) {
         switch (opt) {
         case 'q':
             conn_params.queue_size = strtol(optarg, NULL, 10);
-            printf("INFO: setting queue size = %ld\n", conn_params.queue_size);
+            // printf("INFO: setting queue size = %ld\n", conn_params.queue_size);
             break;
         case 'w':
             conn_params.workers = strtol(optarg, NULL, 10);
-            printf("INFO: setting worker count = %ld\n", conn_params.workers);
+            // printf("INFO: setting worker count = %ld\n", conn_params.workers);
             break;
         case 'p':
             if (!strcmp(optarg, "FIFO")) {
@@ -644,7 +686,7 @@ int main (int argc, char ** argv) {
                 fprintf(stderr, "Invalid queue policy.\n" USAGE_STRING, argv[0]);
                 return EXIT_FAILURE;
             }
-            printf("INFO: setting queue policy = %s\n", optarg);
+            // printf("INFO: setting queue policy = %s\n", optarg);
             break;
         default: /* '?' */
             fprintf(stderr, USAGE_STRING, argv[0]);
@@ -659,7 +701,7 @@ int main (int argc, char ** argv) {
 
     if (optind < argc) {
         socket_port = strtol(argv[optind], NULL, 10);
-        printf("INFO: setting server port as: %d\n", socket_port);
+        // printf("INFO: setting server port as: %d\n", socket_port);
     } else {
         ERROR_INFO();
         fprintf(stderr, USAGE_STRING, argv[0]);
@@ -696,7 +738,7 @@ int main (int argc, char ** argv) {
         return EXIT_FAILURE;
     }
 
-    printf("INFO: Waiting for incoming connection...\n");
+    // printf("INFO: Waiting for incoming connection...\n");
     client_len = sizeof(struct sockaddr_in);
     accepted = accept(sockfd, (struct sockaddr *)&client, &client_len);
     if (accepted == -1) {
